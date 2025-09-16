@@ -574,6 +574,14 @@
                 </button>
             </div>
 
+            <div id="settings-parent-domain-group" class="hidden" style="grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; margin-top: -0.5rem;">
+                <label for="settings-parent-domain" style="color: #0056b3;">└─ Родительский домен:</label>
+                <select id="settings-parent-domain" name="parent_domain" style="border-color: #007bff;">
+                    <!-- Опции будут загружены динамически -->
+                    <option value="">-- Выберите домен --</option>
+                </select>
+            </div>
+
             <!-- НОВОЕ ПОЛЕ: ВЫБОР SSL СЕРТИФИКАТА В НАСТРОЙКАХ -->
             <label for="settings-ssl-cert-select">SSL Сертификат:</label>
             <select id="settings-ssl-cert-select" name="ssl_certificate_name">
@@ -717,6 +725,57 @@
         const settingsModalTitle = document.getElementById('settings-modal-title');
         const settingsError = document.getElementById('settings-error');
 
+
+        // --- 1. Получаем ссылки на новые элементы ---
+        const deployPathDomainInput = document.getElementById('deploy-path-domain');
+        const deployParentDomainGroup = document.getElementById('deploy-parent-domain-group');
+        const deployParentDomainSelect = document.getElementById('deploy-parent-domain');
+
+        const settingsPathDomainInput = document.getElementById('settings-path-domain');
+        const settingsParentDomainGroup = document.getElementById('settings-parent-domain-group');
+        const settingsParentDomainSelect = document.getElementById('settings-parent-domain');
+
+        // --- 2. Новая функция для загрузки доменов в dropdown'ы ---
+        async function populateParentDomainDropdowns() {
+            try {
+                const response = await authedFetch('/api/nginx/domains');
+                if (!response.ok) return;
+                const domains = await response.json();
+
+                // Очищаем оба списка
+                deployParentDomainSelect.innerHTML = '<option value="">-- Выберите домен --</option>';
+                settingsParentDomainSelect.innerHTML = '<option value="">-- Выберите домен --</option>';
+
+                domains.forEach(domain => {
+                    deployParentDomainSelect.innerHTML += `<option value="${domain}">${domain}</option>`;
+                    settingsParentDomainSelect.innerHTML += `<option value="${domain}">${domain}</option>`;
+                });
+            } catch (error) {
+                console.error("Failed to load parent domains:", error);
+            }
+        }
+
+        // --- 3. Обработчик для поля "Путь или Домен" в ФОРМЕ ДЕПЛОЯ ---
+        deployPathDomainInput.addEventListener('input', (e) => {
+            const value = e.target.value.trim();
+            if (value.startsWith('/')) {
+                deployParentDomainGroup.classList.remove('hidden');
+            } else {
+                deployParentDomainGroup.classList.add('hidden');
+                deployParentDomainSelect.value = ''; // Сбрасываем выбор
+            }
+        });
+
+        // --- 4. Обработчик для поля "Путь или Домен" в НАСТРОЙКАХ ---
+        settingsPathDomainInput.addEventListener('input', (e) => {
+            const value = e.target.value.trim();
+            if (value.startsWith('/')) {
+                settingsParentDomainGroup.classList.remove('hidden');
+            } else {
+                settingsParentDomainGroup.classList.add('hidden');
+                settingsParentDomainSelect.value = ''; // Сбрасываем выбор
+            }
+        });
 
         // Заполняем выпадающий список сертификатов
         async function populateDeployerSslDropdown() {
@@ -1513,6 +1572,7 @@
         await populateSSLCertList();
         await populateDeployerSslDropdown();
         await loadDeployerSettings();
+        await populateParentDomainDropdowns();
 
         document.body.classList.add('loaded'); // Показываем body после загрузки
     });
