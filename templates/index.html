@@ -1,0 +1,1326 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Python Deployer UI</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            margin: 0;
+            background-color: #f4f7f6;
+            opacity: 0; /* Скрываем по умолчанию */
+            transition: opacity 0.5s ease-in-out;
+        }
+        body.loaded {
+            opacity: 1; /* Показываем, когда загрузка завершена */
+        }
+        .container { max-width: 1000px; margin: 2rem auto; padding: 1rem; }
+        header {
+            background-color: #fff; padding: 1.5rem; border-bottom: 1px solid #ddd; margin-bottom: 1rem;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        header button { background-color: #6c757d; color: white; border: none; padding: 0.6rem 1.2rem; border-radius: 4px; cursor: pointer; }
+        header button:hover { background-color: #5a6268; }
+        h1, h2 { color: #333; }
+        .card { background-color: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 1.5rem; padding: 1.5rem; }
+        .tabs { margin-bottom: 1.5rem; border-bottom: 1px solid #ddd; }
+        .tabs button { background-color: transparent; border: none; padding: 1rem 1.5rem; cursor: pointer; font-size: 1.1em; color: #555; border-bottom: 3px solid transparent;}
+        .tabs button.active { color: #007bff; border-bottom-color: #007bff; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .app-list .app { display: flex; justify-content: space-between; align-items: center; padding: 1rem; border-bottom: 1px solid #eee; }
+        .app-list .app:last-child { border-bottom: none; }
+        .app-info { flex-grow: 1; }
+        .app-info strong { font-size: 1.2em; }
+        .app-info .details { color: #666; font-size: 0.9em; }
+        .app-controls { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+        .app-controls button {
+            background-color: #f0f0f0; /* Более нейтральный фон для значков */
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            cursor: pointer;
+            padding: 0.5rem; /* Уменьшаем паддинг, чтобы значки были компактнее */
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            position: relative; /* Для позиционирования tooltip */
+            width: 38px; /* Фиксированная ширина для квадратных кнопок */
+            height: 38px; /* Фиксированная высота для квадратных кнопок */
+            font-size: 1.2em; /* Размер значка */
+            color: #444; /* Цвет значка по умолчанию */
+        }
+        .app-controls button:hover {
+            background-color: #e0e0e0;
+        }
+        .app-controls button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Цвета для кнопок-значков */
+        .app-controls button.view-icon { color: #007bff; border-color: #007bff; }
+        .app-controls button.settings-icon { color: #007bff; border-color: #007bff; }
+        .app-controls button.start-icon { color: #28a745; border-color: #28a745; }
+        .app-controls button.stop-icon { color: #dc3545; border-color: #dc3545; }
+        .app-controls button.restart-icon { color: #ffc107; border-color: #ffc107; }
+        .app-controls button.update-icon { color: #17a2b8; border-color: #17a2b8; }
+        .app-controls button.logs-icon { color: #6f42c1; border-color: #6f42c1; }
+        .app-controls button.history-icon { color: #ffc107; border-color: #ffc107; }
+        .app-controls button.delete-icon { color: #dc3545; border-color: #dc3545; }
+
+        /* Общие стили для tooltip-text (если используются для кнопок управления) */
+        .app-controls button .tooltip-text {
+            visibility: hidden;
+            width: auto;
+            background-color: #333;
+            color: #fff;
+            text-align: center;
+            border-radius: 4px;
+            padding: 5px 10px;
+            position: absolute;
+            z-index: 1;
+            bottom: 120%; /* Показываем над кнопкой */
+            left: 50%;
+            transform: translateX(-50%);
+            opacity: 0;
+            transition: opacity 0.3s;
+            font-size: 0.85em;
+            white-space: nowrap; /* Не переносить текст */
+        }
+        .app-controls button:hover .tooltip-text {
+            visibility: visible;
+            opacity: 1;
+        }
+        .app-controls button .tooltip-text::after {
+            content: "";
+            position: absolute;
+            top: 100%;
+            left: 50%;
+            margin-left: -5px;
+            border-width: 5px;
+            border-style: solid;
+            border-color: #333 transparent transparent transparent;
+        }
+
+        /* --- Стили для поля "Скрипт запуска" --- */
+        .input-with-tooltip {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            width: 100%;
+        }
+        form > div.input-with-tooltip {
+            grid-column: 2;
+        }
+        .input-with-tooltip input {
+            flex-grow: 1;
+            box-sizing: border-box;
+            min-width: 0;
+        }
+
+        /* Стили для кнопки-подсказки */
+        .info-button {
+            background-color: transparent;
+            border: none;
+            color: #6c757d;
+            cursor: pointer;
+            font-size: 1.1em;
+            padding: 0;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative; /* Важно для позиционирования tooltip внутри */
+            flex-shrink: 0;
+            transition: background-color 0.2s;
+        }
+        .info-button:hover {
+            background-color: #e9ecef;
+        }
+        .info-button i {
+            pointer-events: none; /* Чтобы клик проходил на кнопку, а не на иконку */
+        }
+
+        /* Стилизация подсказки внутри кнопки */
+        .info-button .tooltip-text {
+            visibility: hidden;
+            opacity: 0;
+            position: absolute;
+            bottom: calc(100% + 10px); /* Над кнопкой, чуть выше */
+            left: 50%;
+            transform: translateX(-50%);
+            width: 300px;
+            background-color: #333;
+            color: #fff;
+            text-align: left;
+            border-radius: 4px;
+            padding: 10px 15px;
+            z-index: 1001; /* Выше других элементов */
+            white-space: normal;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            transition: opacity 0.3s, visibility 0.3s;
+        }
+        /* Стрелка для подсказки */
+        .info-button .tooltip-text::after {
+            content: "";
+            position: absolute;
+            top: 100%;
+            left: 50%;
+            margin-left: -5px;
+            border-width: 5px;
+            border-style: solid;
+            border-color: #333 transparent transparent transparent;
+        }
+        /* Класс для отображения подсказки по клику */
+        .info-button .tooltip-text.visible {
+            visibility: visible;
+            opacity: 1;
+        }
+
+        /* Новый стиль для блока с маленьким текстом "Важно" */
+        .input-hint-block {
+            grid-column: 2;
+            margin-top: -0.5rem;
+            margin-left: 0.2rem;
+        }
+        /* --- Конец стилей для поля "Скрипт запуска" --- */
+
+
+        /* Исправим выравнивание label для удобства */
+        form label {
+            text-align: right;
+            align-self: center;
+        }
+        form label[for="settings-env-vars"] {
+            align-self: flex-start;
+            padding-top: 0.7rem;
+        }
+
+        /* Стили для модального окна просмотра */
+        .view-modal-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background-color: rgba(0,0,0,0.7); display: flex;
+            justify-content: center; align-items: center; z-index: 2000;
+        }
+        .view-modal-content {
+            background-color: #fff; border-radius: 8px; width: 95%; height: 90%;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.5); display: flex; flex-direction: column;
+        }
+        .view-modal-header {
+            padding: 1rem 1.5rem; border-bottom: 1px solid #ddd;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .view-modal-header h2 { margin: 0; font-size: 1.2rem; }
+        .view-modal-header button {
+            background: none; border: none; font-size: 1.8rem; cursor: pointer;
+            line-height: 1; padding: 0;
+        }
+        .view-modal-body { flex-grow: 1; padding: 0.5rem; }
+        .view-modal-body iframe { width: 100%; height: 100%; border: none; }
+
+        .status { padding: 0.2rem 0.6rem; border-radius: 12px; color: #fff; font-size: 0.8em; }
+        .status-running { background-color: #28a745; }
+        .status-stopped { background-color: #dc3545; }
+        .status-error { background-color: #ffc107; }
+        form { display: grid; grid-template-columns: 150px 1fr; gap: 1rem; align-items: center; }
+        form label { text-align: right; }
+        form input, form button, form textarea { padding: 0.7rem; border: 1px solid #ccc; border-radius: 4px; font-family: inherit; font-size: inherit; }
+        form button { grid-column: 2; background-color: #007bff; color: #fff; border-color: #007bff; cursor: pointer; }
+        #nginx-config-editor { width: 100%; min-height: 500px; font-family: 'Courier New', Courier, monospace; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; padding: 1rem; box-sizing: border-box; }
+        .editor-controls { margin-top: 1rem; display: flex; gap: 1rem; justify-content: flex-end; }
+        .editor-controls .delete-btn {
+            background-color: #dc3545;
+            margin-right: auto; /* Прижимает кнопку влево */
+        }
+        .editor-controls .delete-btn:hover {
+            background-color: #c82333;
+        }
+
+        .loader { text-align: center; padding: 2rem; }
+        .hidden { display: none !important; }
+        .path-control { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem; }
+        .path-control input, .path-control select { flex-grow: 1; }
+        /* Стили для модального окна логов и настроек */
+        .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); display: flex; justify-content: center; align-items: center; z-index: 1000; }
+        .modal-content { background-color: #fff; padding: 2rem; border-radius: 8px; width: 80%; max-width: 900px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); display: flex; flex-direction: column; }
+        .modal-content h2 { margin-top: 0; }
+        .modal-content form { grid-template-columns: 1fr 3fr; }
+        #deploy-log-output { background-color: #2b2b2b; color: #f1f1f1; font-family: 'Courier New', Courier, monospace; white-space: pre-wrap; word-wrap: break-word; padding: 1rem; border-radius: 4px; flex-grow: 1; height: 60vh; overflow-y: auto; }
+        .modal-controls { text-align: right; margin-top: 1.5rem; display: flex; gap: 1rem; justify-content: flex-end; }
+        .modal-controls button { grid-column: auto; }
+        .modal-controls .cancel-btn { background-color: #6c757d; }
+
+        /* Toast Notifications */
+        #toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 2000; /* Убедитесь, что тосты выше других элементов */
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-width: 350px;
+        }
+
+        .toast {
+            background-color: #333;
+            color: #fff;
+            padding: 15px 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+            opacity: 0;
+            transition: opacity 0.3s ease-in-out, transform 0.3s ease-in-out;
+            transform: translateX(100%);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.95em;
+            min-width: 250px; /* Чтобы тосты не были слишком узкими */
+        }
+
+        .toast.show {
+            opacity: 1;
+            transform: translateX(0);
+        }
+
+        .toast-icon {
+            font-size: 1.3em;
+        }
+
+        .toast.success { background-color: #28a745; }
+        .toast.error { background-color: #dc3545; }
+        .toast.info { background-color: #17a2b8; }
+        .toast.warning { background-color: #ffc107; color: #333; } /* Для warning текст темный */
+
+        /* Custom Confirm Modal */
+        .custom-confirm-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.6);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 3000; /* Выше тостов */
+            visibility: hidden;
+            opacity: 0;
+            transition: opacity 0.3s ease-in-out, visibility 0.3s;
+        }
+
+        .custom-confirm-overlay.show {
+            visibility: visible;
+            opacity: 1;
+        }
+
+        .custom-confirm-modal {
+            background-color: #fff;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+            width: 100%;
+            max-width: 450px;
+            text-align: center;
+            transform: translateY(-20px);
+            transition: transform 0.3s ease-in-out;
+        }
+
+        .custom-confirm-overlay.show .custom-confirm-modal {
+            transform: translateY(0);
+        }
+
+        .custom-confirm-modal h3 {
+            margin-top: 0;
+            color: #333;
+            font-size: 1.3em;
+        }
+
+        .custom-confirm-modal p {
+            color: #555;
+            margin-bottom: 1.5rem;
+        }
+
+        .custom-confirm-modal-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 1rem;
+        }
+
+        .custom-confirm-modal-buttons button {
+            padding: 0.8rem 1.5rem;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1em;
+            min-width: 100px;
+            transition: background-color 0.2s;
+        }
+
+        .custom-confirm-modal-buttons .confirm-yes {
+            background-color: #dc3545; /* Красный для опасных действий */
+            color: #fff;
+        }
+        .custom-confirm-modal-buttons .confirm-yes:hover {
+            background-color: #c82333;
+        }
+
+        .custom-confirm-modal-buttons .confirm-no {
+            background-color: #6c757d;
+            color: #fff;
+        }
+        .custom-confirm-modal-buttons .confirm-no:hover {
+            background-color: #5a6268;
+        }
+    </style>
+
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <h1>Python Deployer Dashboard</h1>
+        <button id="logout-btn">Выход</button>
+    </header>
+    <div class="tabs">
+        <button class="tab-button active" data-tab="deployer">Приложения</button>
+        <button class="tab-button" data-tab="nginx">Nginx Конфигурация</button>
+    </div>
+    <div id="deployer" class="tab-content active">
+        <div class="card">
+            <h2>Развернуть новое Python приложение</h2>
+            <form id="deploy-form">
+                <label for="name">Имя приложения:</label>
+                <input type="text" id="name" name="name" required placeholder="my-fastapi-app">
+
+                <label for="start_script">Скрипт запуска:</label>
+                <div class="input-with-tooltip">
+                    <input type="text" id="start_script" name="start_script" value="main.py" style="box-sizing: border-box;">
+                    <button type="button" class="info-button" id="start-script-info-button">
+                        <i class="fas fa-info-circle"></i>
+                        <span class="tooltip-text">
+                            Укажите файл (например, <strong>main.py</strong>) или полную команду (например, <strong>-m uvicorn main:app</strong>).<br>
+                            Для простого запуска файла убедитесь, что в нем есть блок <strong>if __name__ == '__main__':</strong> для старта сервера.
+                            <small style="color: #c7254e; background-color: #f9f2f4; padding: 2px 4px; border-radius: 3px; display: inline-block; margin-top: 5px;">
+                                <strong>Важно:</strong> Приложение будет доступно <u>только</u> через кнопку "Просмотр" в этой панели.
+                            </small>
+                        </span>
+                    </button>
+                </div>
+
+                <label for="port">Порт приложения:</label>
+                <input type="number" id="port" name="port" placeholder="Авто (например, 8001)">
+
+                <label for="deploy-path-domain">Путь или Домен (Nginx):</label>
+                <div class="input-with-tooltip">
+                    <input type="text" id="deploy-path-domain" name="nginx_proxy_target" placeholder="Пример: /api/v1 или app.example.com">
+                    <button type="button" class="info-button" id="deploy-path-domain-info-button">
+                        <i class="fas fa-info-circle"></i>
+                        <span class="tooltip-text">
+                            Укажите:
+                            <ul>
+                                <li><strong>/мой-путь</strong>: Для доступа через подпуть на основном домене (например, <code>18zim.ru/мой-путь</code>).</li>
+                                <li><strong>sub.domain.com</strong>: Для доступа через поддомен (требуется настройка DNS).</li>
+                                <li>Оставьте пустым, если не нужен доступ через Nginx.</li>
+                            </ul>
+                        </span>
+                    </button>
+                </div>
+                <label for="deploy-ssl-cert-select">SSL Сертификат:</label>
+                <select id="deploy-ssl-cert-select" name="ssl_certificate_name">
+                    <option value="">-- Нет (только HTTP) --</option>
+                    <!-- Опции будут загружены динамически -->
+                </select>
+                <label for="zip_file">ZIP-архив:</label>
+                <input type="file" id="zip_file" name="zip_file" required accept=".zip">
+                <button type="submit">Развернуть</button>
+            </form>
+        </div>
+        <div class="card">
+            <h2>Развернутые приложения</h2>
+            <div id="app-list-container">
+                <div id="loader" class="loader">Загрузка приложений...</div>
+                <div id="app-list" class="app-list"></div>
+            </div>
+        </div>
+    </div>
+    <div id="nginx" class="tab-content">
+        <!-- НОВЫЙ БЛОК: УПРАВЛЕНИЕ SSL -->
+        <div class="card">
+            <h2>Управление SSL Сертификатами</h2>
+            <div id="ssl-cert-list-container">
+                <div id="ssl-loader" class="loader">Загрузка сертификатов...</div>
+                <div id="ssl-cert-list"></div>
+            </div>
+            <hr style="border-top: 1px solid #eee; margin: 1.5rem 0;">
+            <h3>Загрузить новый сертификат</h3>
+            <form id="ssl-upload-form">
+                <label for="ssl-cert-name">Имя (для удобства):</label>
+                <input type="text" id="ssl-cert-name" required placeholder="my-domain.com">
+
+                <label for="ssl-cert-file">Файл сертификата:</label>
+                <input type="file" id="ssl-cert-file" required>
+
+                <label for="ssl-key-file">Файл приватного ключа:</label>
+                <input type="file" id="ssl-key-file" required>
+
+                <div></div> <!-- Пустая ячейка для выравнивания кнопки -->
+                <button type="submit">Загрузить сертификат</button>
+            </form>
+        </div>
+        <div class="card">
+            <h2>Редактор Nginx конфигурации</h2>
+            <div class="path-control">
+                <label for="nginx-config-select" style="flex-shrink: 0;">Выберите конфиг:</label>
+                <select id="nginx-config-select" style="flex-grow: 1; padding: 0.7rem; border-radius: 4px; border: 1px solid #ccc;"></select>
+            </div>
+            <div class="path-control" id="new-config-path-control" style="display: none;">
+                 <label for="nginx-config-path-input">Имя нового файла:</label>
+                 <input type="text" id="nginx-config-path-input" placeholder="например, my-new-app.conf">
+            </div>
+            <textarea id="nginx-config-editor" spellcheck="false"></textarea>
+            <div class="editor-controls">
+                <button id="delete-nginx-btn" class="delete-btn">Удалить конфиг</button>
+                <button id="reload-nginx-btn">Перезагрузить Nginx</button>
+                <button id="save-nginx-btn">Сохранить изменения</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Модальное окно логов -->
+<div id="deploy-log-modal" class="modal-overlay hidden">
+    <div class="modal-content">
+        <h2>Процесс развертывания</h2>
+        <pre id="deploy-log-output">Ожидание подключения к серверу...</pre>
+        <div class="modal-controls">
+            <button id="close-log-modal-btn" disabled>Закрыть</button>
+        </div>
+    </div>
+</div>
+
+<!-- Модальное окно просмотра -->
+<div id="view-modal" class="view-modal-overlay hidden">
+    <div class="view-modal-content">
+        <div class="view-modal-header">
+            <h2 id="view-modal-title">Просмотр приложения</h2>
+            <button id="close-view-modal-btn">&times;</button>
+        </div>
+        <div class="view-modal-body">
+            <iframe id="app-iframe" src="about:blank"></iframe>
+        </div>
+    </div>
+</div>
+
+<!-- Модальное окно настроек -->
+<div id="settings-modal" class="modal-overlay hidden">
+    <div class="modal-content">
+        <h2 id="settings-modal-title">Настройки приложения</h2>
+        <form id="settings-form">
+            <label for="settings-port">Порт приложения:</label>
+            <input type="number" id="settings-port" required>
+
+            <label for="settings-start-script">Скрипт запуска:</label>
+            <input type="text" id="settings-start-script" required>
+
+            <label for="settings-path-domain">Путь или Домен (Nginx):</label>
+            <div class="input-with-tooltip">
+                <input type="text" id="settings-path-domain" placeholder="Пример: /api/v1 или app.example.com">
+                <button type="button" class="info-button" id="settings-path-domain-info-button">
+                    <i class="fas fa-info-circle"></i>
+                    <span class="tooltip-text">
+                        Укажите:
+                        <ul>
+                            <li><strong>/мой-путь</strong>: Для доступа через подпуть на основном домене (например, <code>18zim.ru/мой-путь</code>).</li>
+                            <li><strong>sub.domain.com</strong>: Для доступа через поддомен (требуется настройка DNS).</li>
+                            <li>Оставьте пустым, если не нужен доступ через Nginx.</li>
+                        </ul>
+                    </span>
+                </button>
+            </div>
+
+            <!-- НОВОЕ ПОЛЕ: ВЫБОР SSL СЕРТИФИКАТА В НАСТРОЙКАХ -->
+            <label for="settings-ssl-cert-select">SSL Сертификат:</label>
+            <select id="settings-ssl-cert-select" name="ssl_certificate_name">
+                 <option value="">-- Нет (только HTTP) --</option>
+                 <!-- Опции будут загружены динамически -->
+            </select>
+
+            <label for="settings-env-vars" style="align-self: start; padding-top: 0.7rem;">Переменные окружения:</label>
+            <textarea id="settings-env-vars" rows="6" placeholder="KEY1=VALUE1&#10;KEY2=VALUE2"></textarea>
+
+            <div></div>
+            <div class="modal-controls" style="margin-top: 0; justify-content: flex-start;">
+                <button type="submit" id="save-settings-btn">Сохранить</button>
+                <button type="button" class="cancel-btn" id="cancel-settings-btn">Отмена</button>
+            </div>
+        </form>
+        <div id="settings-error" style="color: red; margin-top: 1rem;"></div>
+    </div>
+</div>
+
+<script>
+    let currentAppsData = {};
+
+    // --- Toast Notification Function ---
+    function showToast(message, type = 'info', duration = 3000) {
+        const toastContainer = document.getElementById('toast-container');
+        if (!toastContainer) {
+            console.warn("Toast container not found. Fallback to alert:", message);
+            alert(message);
+            return;
+        }
+
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+        let icon = '';
+        switch (type) {
+            case 'success': icon = '<i class="fas fa-check-circle toast-icon"></i>'; break;
+            case 'error': icon = '<i class="fas fa-times-circle toast-icon"></i>'; break;
+            case 'warning': icon = '<i class="fas fa-exclamation-triangle toast-icon"></i>'; break;
+            case 'info':
+            default: icon = '<i class="fas fa-info-circle toast-icon"></i>'; break;
+        }
+        toast.innerHTML = `${icon}<span>${message}</span>`;
+        toastContainer.appendChild(toast);
+
+        setTimeout(() => {
+            toast.classList.add('show');
+        }, 10);
+
+        setTimeout(() => {
+            toast.classList.remove('show');
+            toast.addEventListener('transitionend', () => toast.remove(), { once: true });
+        }, duration);
+    }
+
+    // --- Custom Confirm Function ---
+    function customConfirm(message, title = 'Подтверждение', yesText = 'Да', noText = 'Отмена') {
+        return new Promise((resolve) => {
+            const overlay = document.createElement('div');
+            overlay.className = 'custom-confirm-overlay';
+            overlay.id = 'temp-custom-confirm-overlay'; // Временный ID для поиска
+
+            overlay.innerHTML = `
+                <div class="custom-confirm-modal">
+                    <h3 id="custom-confirm-title">${title}</h3>
+                    <p id="custom-confirm-message">${message}</p>
+                    <div class="custom-confirm-modal-buttons">
+                        <button class="confirm-yes">${yesText}</button>
+                        <button class="confirm-no">${noText}</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+
+            const modalTitle = overlay.querySelector('#custom-confirm-title');
+            const modalMessage = overlay.querySelector('#custom-confirm-message');
+            const yesButton = overlay.querySelector('.confirm-yes');
+            const noButton = overlay.querySelector('.confirm-no');
+
+            const cleanup = () => {
+                overlay.classList.remove('show');
+                overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });
+            };
+
+            yesButton.addEventListener('click', () => {
+                cleanup();
+                resolve(true);
+            }, { once: true });
+
+            noButton.addEventListener('click', () => {
+                cleanup();
+                resolve(false);
+            }, { once: true });
+
+            setTimeout(() => {
+                overlay.classList.add('show');
+            }, 10);
+        });
+    }
+
+
+    async function authedFetch(url, options = {}) {
+        const token = localStorage.getItem('deployer_token');
+        const headers = { ...options.headers, 'Authorization': `Bearer ${token}` };
+        const response = await fetch(url, { ...options, headers });
+        if (response.status === 401) {
+            localStorage.removeItem('deployer_token');
+            showToast('Ваша сессия истекла. Пожалуйста, войдите снова.', 'error');
+            window.location.href = '/login';
+            return new Promise(() => {});
+        }
+        return response;
+    }
+
+    document.addEventListener('DOMContentLoaded', async () => {
+        document.getElementById('logout-btn').addEventListener('click', async () => {
+            try { await authedFetch('/api/logout', { method: 'POST' }); }
+            catch (error) { console.error('Logout failed:', error); }
+            finally {
+                localStorage.removeItem('deployer_token');
+                window.location.href = '/login';
+            }
+        });
+
+        const appList = document.getElementById('app-list');
+        const loader = document.getElementById('loader');
+        const deployForm = document.getElementById('deploy-form');
+        const nginxEditor = document.getElementById('nginx-config-editor');
+
+        const logModal = document.getElementById('deploy-log-modal');
+        const logOutput = document.getElementById('deploy-log-output');
+        const closeLogBtn = document.getElementById('close-log-modal-btn');
+        closeLogBtn.addEventListener('click', () => logModal.classList.add('hidden'));
+
+        const settingsModal = document.getElementById('settings-modal');
+        const settingsForm = document.getElementById('settings-form');
+        const cancelSettingsBtn = document.getElementById('cancel-settings-btn');
+        const settingsModalTitle = document.getElementById('settings-modal-title');
+        const settingsError = document.getElementById('settings-error');
+
+        function closeSettingsModal() {
+            settingsModal.classList.add('hidden');
+            settingsError.textContent = '';
+        }
+
+        cancelSettingsBtn.addEventListener('click', closeSettingsModal);
+
+        function showTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.tab-button').forEach(el => el.classList.remove('active'));
+            document.getElementById(tabName).classList.add('active');
+            document.querySelector(`.tab-button[data-tab="${tabName}"]`).classList.add('active');
+        }
+
+        document.querySelectorAll('.tab-button').forEach(button => {
+            button.addEventListener('click', () => {
+                const tabName = button.dataset.tab;
+                if (tabName) {
+                    showTab(tabName);
+                }
+            });
+        });
+
+        const viewModal = document.getElementById('view-modal');
+        const viewModalTitle = document.getElementById('view-modal-title');
+        const appIframe = document.getElementById('app-iframe');
+        const closeViewModalBtn = document.getElementById('close-view-modal-btn');
+
+        function closeViewModal() {
+            viewModal.classList.add('hidden');
+            appIframe.src = 'about:blank';
+        }
+
+        closeViewModalBtn.addEventListener('click', closeViewModal);
+
+        async function fetchApps() {
+            loader.classList.remove('hidden');
+            appList.innerHTML = '';
+            currentAppsData = {};
+            try {
+                const response = await authedFetch('/api/apps');
+                if (!response.ok) throw new Error(`Network error: ${response.status}`);
+                const apps = await response.json();
+
+                if (apps.length === 0) {
+                    appList.innerHTML = '<p style="text-align:center; color:#666;">Нет развернутых приложений.</p>';
+                    return;
+                }
+
+                const fragment = document.createDocumentFragment();
+                apps.forEach(app => {
+                    currentAppsData[app.name] = app;
+                    const appElement = document.createElement('div');
+                    appElement.className = 'app';
+                    appElement.id = `app-${app.name}`;
+
+                    const isRunning = app.status === 'running';
+                    const startDisabled = isRunning ? 'disabled' : '';
+                    const stopDisabled = !isRunning ? 'disabled' : '';
+                    const restartDisabled = !isRunning ? 'disabled' : '';
+                    const updateDisabled = '';
+
+                    appElement.innerHTML = `
+                            <div class="app-info">
+                                <strong>${app.name}</strong>
+                                <span class="status status-${app.status}">${app.status}</span>
+                                <div class="details">
+                                    Port: ${app.port} |
+                                    Nginx: ${app.nginx_proxy_target ? `<span>${app.nginx_proxy_target} ${app.ssl_certificate_name ? '<i class="fas fa-lock" style="color: #28a745;"></i>' : ''}</span>` : 'N/A'}
+                                </div>
+                            </div>
+                            <div class="app-controls">
+                                <button data-action="view" class="view-icon" ><i class="fas fa-eye"></i><span class="tooltip-text">Просмотр</span></button>
+                                <button data-action="settings" class="settings-icon" ><i class="fas fa-cog"></i><span class="tooltip-text">Настройки</span></button>
+                                <button data-action="start" class="start-icon" ${startDisabled}><i class="fas fa-play"></i><span class="tooltip-text">Запустить</span></button>
+                                <button data-action="stop" class="stop-icon" ${stopDisabled}><i class="fas fa-stop"></i><span class="tooltip-text">Остановить</span></button>
+                                <button data-action="restart" class="restart-icon" ${restartDisabled}><i class="fas fa-redo"></i><span class="tooltip-text">Перезапустить</span></button>
+                                <button data-action="update" class="update-icon" ${updateDisabled}><i class="fas fa-upload"></i><span class="tooltip-text">Обновить</span></button>
+                                <button data-action="logs" class="logs-icon" ><i class="fas fa-file-alt"></i><span class="tooltip-text">Логи</span></button>
+                                <button data-action="history" class="history-icon" ><i class="fas fa-history"></i><span class="tooltip-text">История</span></button>
+                                <button data-action="delete" class="delete-icon" ><i class="fas fa-trash-alt"></i><span class="tooltip-text">Удалить</span></button>
+                            </div>`;
+
+                    appElement.querySelector('.app-controls').addEventListener('click', (e) => handleAppControlClick(e, app.name));
+                    fragment.appendChild(appElement);
+                });
+                appList.appendChild(fragment);
+
+            } catch (error) {
+                console.error('Error fetching apps:', error);
+                appList.innerHTML = `<p style="text-align:center; color:red;">Не удалось загрузить список приложений: ${error.message}</p>`;
+            } finally {
+                loader.classList.add('hidden');
+            }
+        }
+
+        async function handleAppControlClick(e, appName) {
+            const clickedButton = e.target.closest('button[data-action]');
+            if (!clickedButton || clickedButton.disabled) return;
+
+            const action = clickedButton.dataset.action;
+            if (!action) return;
+
+            switch(action) {
+                case 'start': case 'stop': case 'restart': await handleAction(appName, action); break;
+                case 'view':
+                    viewModalTitle.textContent = `Просмотр: ${appName}`;
+                    appIframe.src = `/api/proxy/${appName}/`;
+                    viewModal.classList.remove('hidden');
+                    break;
+                case 'settings': openSettingsModal(appName); break;
+                case 'update': await handleUpdate(appName); break;
+                case 'logs': window.location.href = `/logs?app=${encodeURIComponent(appName)}`; break;
+                case 'history': window.location.href = `/history?app=${encodeURIComponent(appName)}`; break;
+                case 'delete': await handleDelete(appName); break;
+            }
+        }
+
+        async function handleAction(appName, action) {
+            let confirmMessage = '';
+            switch (action) {
+                case 'start': confirmMessage = `Вы уверены, что хотите запустить приложение '${appName}'?`; break;
+                case 'stop': confirmMessage = `Вы уверены, что хотите остановить приложение '${appName}'?`; break;
+                case 'restart': confirmMessage = `Вы уверены, что хотите перезапустить приложение '${appName}'?`; break;
+                default: confirmMessage = `Вы уверены, что хотите выполнить действие "${action}" для приложения '${appName}'?`;
+            }
+
+            if (!(await customConfirm(confirmMessage, 'Подтверждение действия'))) return;
+            showToast(`Выполняется действие "${action}" для "${appName}"...`, 'info', 4000);
+            try {
+                const response = await authedFetch(`/api/apps/${appName}/actions`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action })
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.detail || 'Server error');
+                showToast(result.message, 'success');
+                await fetchApps();
+            } catch (error) { showToast(`Ошибка: ${error.message}`, 'error'); }
+        }
+
+        async function handleDelete(appName) {
+            if (!(await customConfirm(`ВНИМАНИЕ! Это действие полностью удалит приложение '${appName}', включая все его файлы и бекапы. Продолжить?`, 'Подтверждение удаления', 'Удалить', 'Отмена'))) return;
+            showToast(`Удаление приложения "${appName}"...`, 'info', 4000);
+            try {
+                const response = await authedFetch(`/api/apps/${appName}`, { method: 'DELETE' });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.detail || 'Server error');
+                showToast(result.message, 'success');
+                await fetchApps();
+            } catch (error) { showToast(`Ошибка удаления: ${error.message}`, 'error'); }
+        }
+
+        deployForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(deployForm);
+
+            const sslCertName = document.getElementById('deploy-ssl-cert-select').value;
+            if (sslCertName) {
+                formData.set('ssl_certificate_name', sslCertName);
+            } else {
+                formData.delete('ssl_certificate_name');
+            }
+
+            // Обработка поля Nginx Path/Domain
+            const deployPathDomainValue = document.getElementById('deploy-path-domain').value.trim();
+            if (deployPathDomainValue) {
+                formData.set('nginx_proxy_target', deployPathDomainValue);
+            } else {
+                formData.delete('nginx_proxy_target'); // Убедиться, что пустое значение не отправляется
+            }
+
+            if (!formData.get('port')) formData.delete('port');
+
+            const button = deployForm.querySelector('button[type="submit"]');
+            button.disabled = true; button.textContent = 'Разворачиваю...';
+
+            try {
+                const response = await authedFetch('/api/deploy', { method: 'POST', body: formData });
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || 'Произошла ошибка на сервере.');
+                }
+                const result = await response.json();
+                showLogModalAndConnect(result.task_id);
+                deployForm.reset();
+            } catch (error) {
+                showToast(`Ошибка развертывания: ${error.message}`, 'error');
+            } finally {
+                button.disabled = false; button.textContent = 'Развернуть';
+            }
+        });
+
+        function showLogModalAndConnect(taskId) {
+            logModal.classList.remove('hidden');
+            logOutput.textContent = 'Подключение к потоку логов...';
+            closeLogBtn.disabled = true;
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+            const socket = new WebSocket(`${wsProtocol}://${window.location.host}/ws/deploy/${taskId}`);
+            socket.onopen = () => logOutput.textContent = 'Соединение установлено. Ожидание логов...\n\n';
+            socket.onmessage = (event) => {
+                if (event.data === "CLOSE_CONNECTION") {
+                    logOutput.textContent += '\n--- Процесс завершен. ---';
+                    socket.close(); return;
+                }
+                logOutput.textContent += event.data + '\n';
+                logOutput.scrollTop = logOutput.scrollHeight;
+            };
+            socket.onclose = () => {
+                logOutput.textContent += '\n\nСоединение с сервером закрыто. Можете закрыть это окно.';
+                closeLogBtn.disabled = false;
+                fetchApps();
+            };
+            socket.onerror = (error) => {
+                logOutput.textContent += `\n\n--- ОШИБКА WEBSOCKET: ${error.message}. Соединение разорвано. ---`;
+                closeLogBtn.disabled = false;
+                fetchApps();
+            };
+        }
+
+        function openSettingsModal(appName) {
+            const appData = currentAppsData[appName];
+            if (!appData) {
+                showToast('Не удалось найти данные для приложения ' + appName, 'error');
+                return;
+            }
+            settingsModalTitle.textContent = `Настройки для "${appName}"`;
+            document.getElementById('settings-port').value = appData.port;
+            document.getElementById('settings-start-script').value = appData.start_script;
+            // ИЗМЕНЕНО: Загружаем значение из нового поля
+            document.getElementById('settings-path-domain').value = appData.nginx_proxy_target || '';
+            document.getElementById('settings-ssl-cert-select').value = appData.ssl_certificate_name || '';
+            const envVarsString = Object.entries(appData.env_vars || {}).map(([k, v]) => `${k}=${v}`).join('\n');
+            document.getElementById('settings-env-vars').value = envVarsString;
+
+            settingsForm.dataset.appName = appName;
+            settingsModal.classList.remove('hidden');
+        }
+
+        settingsForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const appName = e.target.dataset.appName;
+            const saveBtn = document.getElementById('save-settings-btn');
+            saveBtn.disabled = true;
+            saveBtn.textContent = 'Сохранение...';
+            settingsError.textContent = '';
+
+            const envVarsText = document.getElementById('settings-env-vars').value.trim();
+            const envVars = {};
+            if (envVarsText) {
+                envVarsText.split('\n').forEach(line => {
+                    const parts = line.split('=');
+                    if (parts.length >= 2) {
+                        const key = parts[0].trim();
+                        const value = parts.slice(1).join('=').trim();
+                        if (key) envVars[key] = value;
+                    }
+                });
+            }
+
+            const payload = {
+                port: parseInt(document.getElementById('settings-port').value, 10),
+                start_script: document.getElementById('settings-start-script').value,
+                nginx_proxy_target: document.getElementById('settings-path-domain').value || null,
+                ssl_certificate_name: document.getElementById('settings-ssl-cert-select').value || null,
+                env_vars: envVars
+            };
+
+            try {
+                const response = await authedFetch(`/api/apps/${appName}/config`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.detail || 'Server error');
+
+                showToast('Настройки успешно сохранены. Приложение перезапускается для применения изменений.', 'success', 5000);
+                closeSettingsModal();
+                await fetchApps();
+            } catch (error) {
+                settingsError.textContent = `Ошибка: ${error.message}`;
+                showToast(`Ошибка сохранения настроек: ${error.message}`, 'error');
+            } finally {
+                saveBtn.disabled = false;
+                saveBtn.textContent = 'Сохранить';
+            }
+        });
+
+        async function handleUpdate(appName) {
+            const fileInput = document.createElement('input');
+            fileInput.type = 'file';
+            fileInput.accept = '.zip';
+            fileInput.onchange = async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                if (!(await customConfirm(`Вы уверены, что хотите обновить '${appName}' файлом '${file.name}'?`, 'Подтверждение обновления'))) return;
+                const formData = new FormData();
+                formData.append('zip_file', file);
+                showToast('Начинается обновление...', 'info', 4000);
+                try {
+                    const response = await authedFetch(`/api/apps/${appName}/update`, { method: 'POST', body: formData });
+                    const result = await response.json();
+                    if (!response.ok) throw new Error(result.detail || 'Server error');
+                    showToast(result.message, 'success');
+                    await fetchApps();
+                } catch (error) {
+                    showToast(`Ошибка обновления: ${error.message}`, 'error');
+                }
+            };
+            fileInput.click();
+        }
+
+        // --- НОВЫЙ БЛОК УПРАВЛЕНИЯ NGINX ---
+        const nginxConfigSelect = document.getElementById('nginx-config-select');
+        const nginxPathInput = document.getElementById('nginx-config-path-input');
+        const newConfigPathControl = document.getElementById('new-config-path-control');
+
+        async function populateNginxConfigSelector() {
+            try {
+                const response = await authedFetch('/api/nginx/configs/list');
+                if (!response.ok) throw new Error('Failed to load config list');
+                const data = await response.json();
+
+                nginxConfigSelect.innerHTML = '<option value="">-- Создать новый файл --</option>';
+                data.files.forEach(file => {
+                    const option = document.createElement('option');
+                    option.value = file;
+                    option.textContent = file;
+                    nginxConfigSelect.appendChild(option);
+                });
+            } catch (error) {
+                showToast(error.message, 'error');
+                nginxConfigSelect.innerHTML = '<option value="">Ошибка загрузки списка</option>';
+            }
+        }
+
+        async function loadNginxConfig(path) {
+            if (!path) {
+                nginxEditor.value = "# Выберите файл для редактирования или создайте новый.";
+                return;
+            }
+            let url = `/api/nginx/config?path=${encodeURIComponent(path)}`;
+            try {
+                nginxEditor.value = "Загрузка...";
+                const response = await authedFetch(url);
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || 'Не удалось загрузить конфиг Nginx.');
+                }
+                const data = await response.json();
+                nginxEditor.value = data.content;
+            } catch (error) {
+                nginxEditor.value = `Ошибка: ${error.message}`;
+                showToast(`Ошибка загрузки: ${error.message}`, 'error');
+            }
+        }
+
+        nginxConfigSelect.addEventListener('change', () => {
+            const selectedPath = nginxConfigSelect.value;
+            if (selectedPath) {
+                newConfigPathControl.style.display = 'none';
+                nginxPathInput.value = ''; // Очищаем поле для нового имени
+                loadNginxConfig(selectedPath);
+            } else {
+                // Выбрали "Создать новый файл"
+                newConfigPathControl.style.display = 'flex';
+                nginxPathInput.value = '';
+                nginxEditor.value = `# Введите здесь конфигурацию для нового файла.\n# Это будет файл в C:\\deployer-data\\nginx-sites\\\n\nlocation /my-new-app/ {\n    proxy_pass http://127.0.0.1:8001/;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    proxy_set_header X-Forwarded-Proto $scheme;\n}`;
+                nginxPathInput.focus();
+            }
+        });
+
+        async function saveNginxConfig() {
+            let path = nginxConfigSelect.value;
+            // Если создаем новый файл, берем путь из инпута
+            if (!path && nginxPathInput.value) {
+                const filename = nginxPathInput.value.endsWith('.conf') ? nginxPathInput.value : `${nginxPathInput.value}.conf`;
+                path = `C:\\deployer-data\\nginx-sites\\${filename}`; // Путь по умолчанию для новых
+            }
+
+            if (!path) { showToast('Выберите файл или укажите имя для нового.', 'warning'); return; }
+            if (!(await customConfirm(`Сохранить изменения в файле '${path}'?`, 'Подтверждение сохранения'))) return;
+
+            const button = document.getElementById('save-nginx-btn');
+            button.disabled = true; button.textContent = 'Сохранение...';
+            try {
+                const response = await authedFetch('/api/nginx/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: path, content: nginxEditor.value })
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.detail);
+                showToast(result.message, 'success');
+                // Если создали новый файл, обновляем список
+                if (!nginxConfigSelect.value) {
+                   await populateNginxConfigSelector();
+                   nginxConfigSelect.value = path; // Выбираем только что созданный файл
+                   newConfigPathControl.style.display = 'none';
+                }
+            } catch (error) {
+                showToast(`Ошибка сохранения: ${error.message}`, 'error');
+            } finally {
+                button.disabled = false; button.textContent = 'Сохранить изменения';
+            }
+        }
+
+        async function reloadNginx() {
+            if (!(await customConfirm('Перезагрузить Nginx?', 'Подтверждение перезагрузки'))) return;
+            const button = document.getElementById('reload-nginx-btn');
+            button.disabled = true; button.textContent = 'Перезагрузка...';
+            try {
+                const response = await authedFetch('/api/nginx/reload', { method: 'POST' });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.detail);
+                showToast(result.message, 'success');
+            } catch (error) {
+                showToast(`Ошибка перезагрузки: ${error.message}`, 'error');
+            } finally {
+                button.disabled = false; button.textContent = 'Перезагрузить Nginx';
+            }
+        }
+
+        async function deleteNginxConfig() {
+            const path = nginxConfigSelect.value;
+            if (!path) { showToast('Выберите файл для удаления.', 'warning'); return; }
+
+            if (!(await customConfirm(`Вы уверены, что хотите удалить файл '${path}'? Это действие необратимо.`, 'Подтверждение удаления', 'Удалить', 'Отмена'))) return;
+
+            const button = document.getElementById('delete-nginx-btn');
+            button.disabled = true;
+            try {
+                const response = await authedFetch(`/api/nginx/config?path=${encodeURIComponent(path)}`, {
+                    method: 'DELETE'
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.detail);
+                showToast(result.message, 'success');
+                nginxEditor.value = ''; // Очищаем редактор
+                await populateNginxConfigSelector(); // Обновляем список
+            } catch (error) {
+                showToast(`Ошибка удаления: ${error.message}`, 'error');
+            } finally {
+                button.disabled = false;
+            }
+        }
+
+        document.getElementById('delete-nginx-btn').addEventListener('click', deleteNginxConfig);
+        document.getElementById('reload-nginx-btn').addEventListener('click', reloadNginx);
+        document.getElementById('save-nginx-btn').addEventListener('click', saveNginxConfig);
+
+        // --- КОНЕЦ НОВОГО БЛОКА NGINX ---
+
+        // Обработчик для кнопки-подсказки "Скрипт запуска"
+        const startScriptInfoButton = document.getElementById('start-script-info-button');
+        if (startScriptInfoButton) {
+            const tooltip = startScriptInfoButton.querySelector('.tooltip-text');
+            startScriptInfoButton.addEventListener('click', (event) => {
+                event.stopPropagation();
+                tooltip.classList.toggle('visible');
+            });
+
+            document.addEventListener('click', (event) => {
+                if (!startScriptInfoButton.contains(event.target) && !tooltip.contains(event.target)) {
+                    tooltip.classList.remove('visible');
+                }
+            });
+        }
+
+        // Обработчик для кнопки-подсказки "Путь или Домен (Nginx)" в форме развертывания
+        const deployPathDomainInfoButton = document.getElementById('deploy-path-domain-info-button');
+        if (deployPathDomainInfoButton) {
+            const tooltip = deployPathDomainInfoButton.querySelector('.tooltip-text');
+            deployPathDomainInfoButton.addEventListener('click', (event) => {
+                event.stopPropagation();
+                tooltip.classList.toggle('visible');
+            });
+            document.addEventListener('click', (event) => {
+                if (!deployPathDomainInfoButton.contains(event.target) && !tooltip.contains(event.target)) {
+                    tooltip.classList.remove('visible');
+                }
+            });
+        }
+
+        // Обработчик для кнопки-подсказки "Путь или Домен (Nginx)" в модальном окне настроек
+        const settingsPathDomainInfoButton = document.getElementById('settings-path-domain-info-button');
+        if (settingsPathDomainInfoButton) {
+            const tooltip = settingsPathDomainInfoButton.querySelector('.tooltip-text');
+            settingsPathDomainInfoButton.addEventListener('click', (event) => {
+                event.stopPropagation();
+                tooltip.classList.toggle('visible');
+            });
+            document.addEventListener('click', (event) => {
+                if (!settingsPathDomainInfoButton.contains(event.target) && !tooltip.contains(event.target)) {
+                    tooltip.classList.remove('visible');
+                }
+            });
+        }
+
+        // --- НОВЫЙ БЛОК JS ДЛЯ УПРАВЛЕНИЯ SSL ---
+        const sslCertList = document.getElementById('ssl-cert-list');
+        const sslLoader = document.getElementById('ssl-loader');
+        const sslUploadForm = document.getElementById('ssl-upload-form');
+
+        async function populateSSLCertList() {
+            sslLoader.classList.remove('hidden');
+            sslCertList.innerHTML = '';
+            try {
+                const response = await authedFetch('/api/ssl/certificates');
+                if (!response.ok) throw new Error('Failed to load certificates');
+                const certs = await response.json();
+
+                if (certs.length === 0) {
+                    sslCertList.innerHTML = '<p style="text-align:center; color:#666;">Нет загруженных сертификатов.</p>';
+                } else {
+                    const listHtml = certs.map(cert => `
+                        <div class="app">
+                            <div class="app-info"><strong><i class="fas fa-shield-alt"></i> ${cert.name}</strong></div>
+                            <div class="app-controls">
+                                <button data-action="delete-ssl" data-name="${cert.name}" class="delete-icon"><i class="fas fa-trash-alt"></i><span class="tooltip-text">Удалить</span></button>
+                            </div>
+                        </div>
+                    `).join('');
+                    sslCertList.innerHTML = listHtml;
+                }
+
+                // Обновляем выпадающие списки в формах
+                await populateSSLDropdowns();
+
+            } catch (error) {
+                sslCertList.innerHTML = `<p style="text-align:center; color:red;">${error.message}</p>`;
+            } finally {
+                sslLoader.classList.add('hidden');
+            }
+        }
+
+        async function populateSSLDropdowns() {
+            const deploySelect = document.getElementById('deploy-ssl-cert-select');
+            const settingsSelect = document.getElementById('settings-ssl-cert-select');
+
+            // Сохраняем выбранные значения, если они есть
+            const currentDeployVal = deploySelect.value;
+            const currentSettingsVal = settingsSelect.value;
+
+            deploySelect.innerHTML = '<option value="">-- Нет (только HTTP) --</option>';
+            settingsSelect.innerHTML = '<option value="">-- Нет (только HTTP) --</option>';
+
+            try {
+                const response = await authedFetch('/api/ssl/certificates');
+                if (!response.ok) return;
+                const certs = await response.json();
+
+                certs.forEach(cert => {
+                    deploySelect.innerHTML += `<option value="${cert.name}">${cert.name}</option>`;
+                    settingsSelect.innerHTML += `<option value="${cert.name}">${cert.name}</option>`;
+                });
+
+                // Восстанавливаем значения
+                deploySelect.value = currentDeployVal;
+                settingsSelect.value = currentSettingsVal;
+            } catch (error) {
+                console.error("Failed to populate SSL dropdowns:", error);
+            }
+        }
+
+        sslUploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const certName = document.getElementById('ssl-cert-name').value;
+            const certFile = document.getElementById('ssl-cert-file').files[0];
+            const keyFile = document.getElementById('ssl-key-file').files[0];
+
+            if (!certName || !certFile || !keyFile) {
+                showToast('Все поля обязательны для заполнения', 'warning');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('name', certName);
+            formData.append('cert_file', certFile);
+            formData.append('key_file', keyFile);
+
+            const button = sslUploadForm.querySelector('button');
+            button.disabled = true; button.textContent = 'Загрузка...';
+
+            try {
+                const response = await authedFetch('/api/ssl/certificates', { method: 'POST', body: formData });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.detail);
+
+                showToast(result.message, 'success');
+                sslUploadForm.reset();
+                await populateSSLCertList();
+
+            } catch (error) {
+                showToast(`Ошибка загрузки: ${error.message}`, 'error');
+            } finally {
+                button.disabled = false; button.textContent = 'Загрузить сертификат';
+            }
+        });
+
+        sslCertList.addEventListener('click', async (e) => {
+            const button = e.target.closest('button[data-action="delete-ssl"]');
+            if (!button) return;
+
+            const certName = button.dataset.name;
+            if (!(await customConfirm(`Вы уверены, что хотите удалить сертификат '${certName}'?`, 'Подтверждение удаления'))) return;
+
+            button.disabled = true;
+            try {
+                const response = await authedFetch(`/api/ssl/certificates/${certName}`, { method: 'DELETE' });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.detail);
+
+                showToast(result.message, 'success');
+                await populateSSLCertList();
+
+            } catch (error) {
+                showToast(`Ошибка удаления: ${error.message}`, 'error');
+                button.disabled = false;
+            }
+        });
+
+        // --- КОНЕЦ НОВОГО БЛОКА JS ДЛЯ SSL ---
+
+        // Первичная загрузка данных
+        await fetchApps();
+        await populateNginxConfigSelector(); // Загружаем список конфигов Nginx
+        await populateSSLCertList();
+
+        document.body.classList.add('loaded'); // Показываем body после загрузки
+    });
+</script>
+
+
+<!-- Контейнер для тостов -->
+<div id="toast-container"></div>
+
+</body>
+</html>

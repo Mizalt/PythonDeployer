@@ -1,0 +1,5 @@
+{
+  "cmd_start": "uvicorn main:app --host 127.0.0.1 --port 7999",
+  "port_server": 7999,
+  "title": "Server Controller"
+}

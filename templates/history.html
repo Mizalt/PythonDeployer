@@ -1,0 +1,177 @@
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>История развертываний</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background-color: #f4f7f6; }
+        .container { max-width: 900px; margin: 2rem auto; padding: 1rem; }
+        header { background-color: #fff; padding: 1.5rem; border-bottom: 1px solid #ddd; margin-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; }
+        .header-controls { display: flex; align-items: center; gap: 1.5rem; }
+        header button { background-color: #6c757d; color: white; border: none; padding: 0.6rem 1.2rem; border-radius: 4px; cursor: pointer; }
+        header button:hover { background-color: #5a6268; }
+        h1, h2 { color: #333; margin: 0; }
+        .card { background-color: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); padding: 1.5rem; }
+        .back-link { font-size: 1em; color: #007bff; text-decoration: none; }
+        .back-link:hover { text-decoration: underline; }
+        .loader { text-align: center; padding: 2rem; }
+        .history-item { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 1rem; border-bottom: 1px solid #eee; }
+        .history-item:last-child { border: none; }
+        .history-item button { background-color: #28a745; color: white; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; }
+        .history-item button:hover { background-color: #218838; }
+        .error-message { color: #dc3545; font-weight: bold; text-align: center; padding: 1rem; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <h1 id="page-title">История развертываний</h1>
+        <div class="header-controls">
+            <a href="/" class="back-link">&larr; Вернуться к приложениям</a>
+            <button id="logout-btn">Выход</button>
+        </div>
+    </header>
+    <div class="card">
+        <div id="history-list-container">
+            <div class="loader">Загрузка истории...</div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // --- НОВЫЙ БЛОК: Безопасность и хелперы ---
+    (function() {
+        const token = localStorage.getItem('deployer_token');
+        if (!token) {
+            window.location.href = '/login';
+        }
+    })();
+
+    async function authedFetch(url, options = {}) {
+        const token = localStorage.getItem('deployer_token');
+
+        const headers = {
+            ...options.headers,
+            'Authorization': `Bearer ${token}`
+        };
+
+        const response = await fetch(url, { ...options, headers });
+
+        if (response.status === 401) { // Не авторизован (токен истек или невалиден)
+            localStorage.removeItem('deployer_token');
+            alert('Ваша сессия истекла. Пожалуйста, войдите снова.');
+            window.location.href = '/login';
+            return new Promise(() => {});
+        }
+        return response;
+    }
+    // --- КОНЕЦ НОВОГО БЛОКА ---
+
+document.addEventListener('DOMContentLoaded', () => {
+    // --- ИЗМЕНЕНО: Правильная логика выхода ---
+    document.getElementById('logout-btn').addEventListener('click', async () => {
+        try {
+            // Вызываем API, чтобы сервер удалил HttpOnly cookie
+            await authedFetch('/api/logout', { method: 'POST' });
+        }
+        catch (error) {
+            console.error('Logout failed:', error);
+        }
+        finally {
+            // В любом случае чистим localStorage и перенаправляем на страницу входа
+            localStorage.removeItem('deployer_token');
+            window.location.href = '/login';
+        }
+    });
+
+    const historyContainer = document.getElementById('history-list-container');
+    const pageTitle = document.getElementById('page-title');
+
+    const params = new URLSearchParams(window.location.search);
+    const appName = params.get('app');
+
+    if (!appName) {
+        historyContainer.innerHTML = '<p class="error-message">Ошибка: Имя приложения не указано в URL.</p>';
+        return;
+    }
+
+    pageTitle.textContent = `История развертываний для "${appName}"`;
+
+    async function fetchHistory() {
+        try {
+            const response = await authedFetch(`/api/apps/${appName}/history`);
+            if (!response.ok) {
+                let errorMsg = `HTTP Error: ${response.status}`;
+                try {
+                    const errorData = await response.json();
+                    errorMsg = errorData.detail || errorMsg;
+                } catch (e) { /* ignore json parsing error */ }
+                throw new Error(errorMsg);
+            }
+
+            const history = await response.json();
+            renderHistory(history);
+
+        } catch (error) {
+            console.error("Failed to fetch history:", error);
+            historyContainer.innerHTML = `<p class="error-message">Не удалось загрузить историю: ${error.message}</p>`;
+        }
+    }
+
+    function renderHistory(history) {
+        if (history.length === 0) {
+            historyContainer.innerHTML = '<p style="text-align:center; color:#666;">История развертываний для этого приложения пуста.</p>';
+            return;
+        }
+
+        let html = '';
+        history.forEach(item => {
+            const dateStr = item.deployed_at ? new Date(item.deployed_at).toLocaleString('ru-RU') : 'Invalid date';
+            const filename = item.filename || 'Unknown file';
+            html += `
+                <div class="history-item">
+                    <div><strong>${filename}</strong><br><small>Дата: ${dateStr}</small></div>
+                    <button class="restore-btn" data-filename="${filename}">Восстановить эту версию</button>
+                </div>`;
+        });
+        historyContainer.innerHTML = html;
+    }
+
+    historyContainer.addEventListener('click', (e) => {
+        if (e.target.classList.contains('restore-btn')) {
+            const filename = e.target.dataset.filename;
+            handleRestore(appName, filename);
+        }
+    });
+
+    async function handleRestore(appName, filename) {
+        if (!confirm(`Вы уверены, что хотите восстановить приложение '${appName}' из резервной копии '${filename}'?`)) return;
+
+        alert('Начинается процесс восстановления. После завершения вы будете перенаправлены на главную страницу.');
+
+        try {
+            const response = await authedFetch(`/api/apps/${appName}/restore`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename })
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.detail || 'Server error');
+
+            alert(result.message);
+            window.location.href = '/';
+
+        } catch (error) {
+            alert(`Ошибка восстановления: ${error.message}`);
+        }
+    }
+
+    fetchHistory();
+});
+</script>
+
+</body>
+</html>

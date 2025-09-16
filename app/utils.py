@@ -1,0 +1,114 @@
+# utils.py
+import subprocess
+import socket
+import logging
+import asyncio # Добавлено для асинхронных операций
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+def decode_windows_output(byte_string: bytes) -> str:
+    """
+    Пытается декодировать байтовую строку от консольной программы Windows,
+    перебирая наиболее вероятные кодировки.
+    """
+    if not byte_string:
+        return ""
+    # Наиболее вероятные кодировки для русской Windows
+    encodings_to_try = ['cp866', 'utf-8', 'utf-16-le', 'cp1251']
+    for enc in encodings_to_try:
+        try:
+            return byte_string.decode(enc).strip()
+        except UnicodeDecodeError:
+            continue
+    # Если ничего не подошло, возвращаем как есть с игнорированием ошибок
+    return byte_string.decode('utf-8', errors='ignore').strip()
+
+
+async def run_command_async(command: str, cwd: str = None):
+    """
+    АСИНХРОННО выполняет команду и передает (yield) строки stdout и stderr.
+    Используется для потоковой передачи логов деплоя через WebSocket.
+    """
+    logging.info(f"Executing async command: '{command}' in '{cwd or 'default dir'}'")
+    process = await asyncio.create_subprocess_shell(
+        command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=cwd
+    )
+
+    # Читаем stdout и stderr параллельно
+    async def read_stream(stream, stream_name):
+        while True:
+            line = await stream.readline()
+            if line:
+                # --- ИЗМЕНЕНИЕ: Используем надежную функцию декодирования ---
+                decoded_line = decode_windows_output(line)
+                yield f"[{stream_name}] {decoded_line}"
+            else:
+                break
+
+    # Объединяем асинхронные генераторы
+    async def merge_streams():
+        async for item in read_stream(process.stdout, 'STDOUT'):
+            yield item
+        async for item in read_stream(process.stderr, 'STDERR'):
+            yield item
+
+    async for log_line in merge_streams():
+        yield log_line
+
+    await process.wait()
+    if process.returncode != 0:
+        yield f"[ERROR] Command exited with code {process.returncode}"
+        raise subprocess.CalledProcessError(process.returncode, command)
+
+
+# ИЗМЕНЕНИЕ ЗДЕСЬ: Добавим аргумент timeout
+def run_command_sync(command: str, cwd: str = None, timeout: int = 30) -> tuple[int, str, str]:
+    """
+    СИНХРОННО выполняет команду в оболочке и возвращает кортеж
+    (код возврата, stdout, stderr), корректно декодируя вывод Windows.
+    Добавлен аргумент timeout для ограничения времени выполнения.
+    """
+    logging.info(f"Executing command: '{command}' in '{cwd or 'default dir'}' with timeout {timeout}s") # Обновлено сообщение
+    try:
+        process = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            cwd=cwd,
+            timeout=timeout # Используем переданный таймаут
+        )
+
+        stdout_str = decode_windows_output(process.stdout)
+        stderr_str = decode_windows_output(process.stderr)
+
+        if process.returncode != 0:
+            error_message = stderr_str if stderr_str else stdout_str
+            logging.error(f"Command '{command}' failed with code {process.returncode}")
+            logging.error(f"Error Output: {error_message}")
+        else:
+            logging.info(f"Command '{command}' executed successfully. Stdout: {stdout_str[:500]}...")
+
+        return process.returncode, stdout_str, stderr_str
+
+    except subprocess.TimeoutExpired:
+        logging.error(f"Command '{command}' timed out after {timeout} seconds.") # Обновлено сообщение
+        return -1, "", "Command timed out."
+    except Exception as e:
+        logging.error(f"Failed to execute command '{command}': {e}")
+        return -1, "", str(e)
+
+def find_free_port(start_port: int, existing_ports: set) -> int:
+    """Находит первый свободный TCP-порт, начиная с start_port."""
+    port = start_port
+    while True:
+        if port in existing_ports:
+            port += 1
+            continue
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(('localhost', port)) != 0:
+                return port
+        port += 1
