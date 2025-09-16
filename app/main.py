@@ -545,30 +545,27 @@ def _redeploy_from_zip(app_info: App, zip_path: Path):
 
 
 # --- НОВАЯ HELPER-ФУНКЦИЯ для управления конфигом Nginx ---
-def _update_nginx_config_for_app(app_name: str, nginx_proxy_target: Optional[str], port: int, ssl_certificate_name: Optional[str]):
+def _update_nginx_config_for_app(app_name: str, nginx_proxy_target: Optional[str], port: int,
+                                 ssl_certificate_name: Optional[str]):
     """
     Создает, обновляет или удаляет конфиг Nginx для приложения.
-    - Если target - это домен (e.g., "app.example.com"), создает server-блок в NGINX_SITES_DIR.
-    - Если target - это путь (e.g., "/test/"), создает location-блок в NGINX_LOCATIONS_DIR.
+    Правильно обрабатывает все комбинации: путь/домен, с SSL/без SSL.
     """
-    # Сначала удаляем старые файлы из обеих папок, чтобы избежать дубликатов при смене типа
     site_conf_path = NGINX_SITES_DIR / f"{app_name}.conf"
     location_conf_path = NGINX_LOCATIONS_DIR / f"{app_name}.conf"
-    if site_conf_path.exists():
-        site_conf_path.unlink()
-    if location_conf_path.exists():
-        location_conf_path.unlink()
+
+    # Всегда удаляем оба файла, чтобы избежать конфликтов при смене типа (домен -> путь)
+    if site_conf_path.exists(): site_conf_path.unlink()
+    if location_conf_path.exists(): location_conf_path.unlink()
 
     if not nginx_proxy_target:
         return  # Цель не указана, очистка выполнена, выходим.
 
-    # Определяем тип цели: путь или домен
     is_path_target = nginx_proxy_target.startswith('/')
 
     if is_path_target:
-        # --- ГЕНЕРИРУЕМ ФАЙЛ С LOCATION-БЛОКОМ ---
+        # --- ГЕНЕРИРУЕМ ФАЙЛ С LOCATION-БЛОКОМ (SSL здесь не применяется) ---
         path_prefix = nginx_proxy_target.rstrip('/')
-        # Важно! Nginx требует, чтобы location для /test/ был именно /test/
         if not path_prefix.endswith('/'):
             path_prefix += '/'
 
@@ -582,64 +579,71 @@ location {path_prefix} {{
     proxy_set_header X-Forwarded-Proto $scheme;
 }}
 """
-        # СОХРАНЯЕМ В ПРАВИЛЬНУЮ ПАПКУ
         location_conf_path.write_text(location_content, encoding="utf-8")
 
     else:  # is_domain_target
-        # --- ГЕНЕРИРУЕМ ФАЙЛ С SERVER-БЛОКОМ (эта логика была правильной) ---
+        # --- ГЕНЕРИРУЕМ ФАЙЛ С SERVER-БЛОКОМ (с умной обработкой SSL) ---
         server_name = nginx_proxy_target
-        ssl_config = ""
+
+        # Общий блок проксирования, который будет использоваться в обоих случаях
+        proxy_block = f"""
+    location / {{
+        proxy_pass http://localhost:{port};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }}"""
+
+        # Проверяем, есть ли валидный SSL сертификат
+        use_ssl = False
+        ssl_config_block = ""
         if ssl_certificate_name:
             cert_dir = SSL_DIR / ssl_certificate_name
-            cert_path = (cert_dir / "fullchain.pem").as_posix()
-            key_path = (cert_dir / "privkey.pem").as_posix()
-            if Path(cert_path).exists() and Path(key_path).exists():
-                ssl_config = f"""
+            cert_path = cert_dir / "fullchain.pem"
+            key_path = cert_dir / "privkey.pem"
+            if cert_path.exists() and key_path.exists():
+                use_ssl = True
+                ssl_config_block = f"""
     listen 443 ssl;
-    ssl_certificate {cert_path};
-    ssl_certificate_key {key_path};
+    ssl_certificate {cert_path.as_posix()};
+    ssl_certificate_key {key_path.as_posix()};
     ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-    ssl_prefer_server_ciphers on;
 """
-        # HTTP блок
-        http_server_block = f"""
+
+        # Собираем финальный конфиг
+        final_config = ""
+        if use_ssl:
+            # --- Сценарий с SSL ---
+            # Блок для HTTP, который делает редирект на HTTPS
+            final_config += f"""
 server {{
     listen 80;
     server_name {server_name};
-"""
-        if ssl_config:
-            http_server_block += "    location / { return 301 https://$host$request_uri; }\\n}"
-        else:
-            http_server_block += f"""
     location / {{
-        proxy_pass http://localhost:{port};
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        return 301 https://$host$request_uri;
     }}
 }}
 """
-        # HTTPS блок (если есть SSL)
-        https_server_block = ""
-        if ssl_config:
-            https_server_block = f"""
+            # Блок для HTTPS, который проксирует на приложение
+            final_config += f"""
 server {{
-    {ssl_config}
+    {ssl_config_block}
     server_name {server_name};
-
-    location / {{
-        proxy_pass http://localhost:{port};
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }}
+    {proxy_block}
 }}
 """
-        final_config = http_server_block + https_server_block
-        # СОХРАНЯЕМ В ПРАВИЛЬНУЮ ПАПКУ
+        else:
+            # --- Сценарий БЕЗ SSL ---
+            # Только один блок для HTTP, который проксирует на приложение
+            final_config += f"""
+server {{
+    listen 80;
+    server_name {server_name};
+    {proxy_block}
+}}
+"""
+
         site_conf_path.write_text(final_config, encoding="utf-8")
 
 # --- Эндпоинты API для управления приложениями ---
