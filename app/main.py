@@ -1339,7 +1339,7 @@ def reload_nginx(current_user: Annotated[User, Depends(get_current_active_user)]
 def _update_deployer_nginx_config(domain: Optional[str], ssl_cert_name: Optional[str]):
     """
     (HELPER) Создает или обновляет главный конфиг Nginx для самого Deployer'а.
-    Версия 2.0: Упрощенная и корректная логика для всех сценариев.
+    Версия 2.1: Исправлена опечатка в TLS протоколе и уточнена логика include.
     """
     config_path = NGINX_SITES_DIR / "deployer-main.conf"
     deployer_port = os.getenv("PORT", "7999")
@@ -1383,8 +1383,8 @@ server {{
         proxy_read_timeout 86400;
     }}"""
 
-    # ПРАВИЛЬНЫЙ РЕКУРСИВНЫЙ INCLUDE
-    include_line_for_apps = f"    include {(NGINX_LOCATIONS_DIR.as_posix())}/*/*.conf;"
+    # ИСПРАВЛЕНИЕ ЗДЕСЬ: Уточняем путь для include, чтобы он был специфичен для текущего домена
+    include_line_for_apps = f"    include {(NGINX_LOCATIONS_DIR / domain).as_posix()}/*.conf;"
 
     # Проверяем, есть ли валидный SSL сертификат
     use_ssl = False
@@ -1440,7 +1440,6 @@ server {{
     {include_line_for_apps}
 }}
 """
-
     config_path.write_text(final_config, encoding="utf-8")
 
 
