@@ -26,10 +26,12 @@ NGINX_MAIN_CONF_FILE = NGINX_DIR / "conf" / "nginx.conf"
 # Убедитесь, что в nginx.conf есть строка: include C:/deployer-data/nginx-sites/*.conf;
 NGINX_SITES_DIR = DATA_DIR / "nginx-sites"
 NGINX_SITES_DIR.mkdir(exist_ok=True)
+# --- НОВАЯ КОНСТАНТА ---
+NGINX_LOCATIONS_DIR = DATA_DIR / "nginx-locations"
+NGINX_LOCATIONS_DIR.mkdir(exist_ok=True)
 
 # ИЗМЕНЕНО: Команда для перезагрузки Nginx теперь использует новую переменную
 NGINX_RELOAD_CMD = "net stop nginx && net start nginx"
-
 
 # --- Настройки NSSM ---
 NSSM_PATH = "C:\\nssm-2.24\\win64\\nssm.exe"
@@ -49,6 +51,4 @@ PYTHON_EXECUTABLES = {
     "Python 3.12 (System)": "C:\\Users\\Администратор\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
 }
 # Версия по умолчанию, если не выбрана
-
 DEFAULT_PYTHON_EXECUTABLE = list(PYTHON_EXECUTABLES.values())[0]
-

@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import List, Optional, Annotated, Dict
 from datetime import timedelta
 
+import os
+import signal
+
 import httpx
 from fastapi.responses import StreamingResponse
 from fastapi import (
@@ -30,7 +33,7 @@ from .config import (
     APPS_BASE_DIR, BACKUPS_DIR, NGINX_MAIN_CONF_FILE, NGINX_RELOAD_CMD,
     NSSM_PATH, BASE_PORT, ACCESS_TOKEN_EXPIRE_MINUTES, DB_FILE,
     PYTHON_EXECUTABLES, DEFAULT_PYTHON_EXECUTABLE, NGINX_SITES_DIR,
-    NGINX_DIR, SSL_DIR
+    NGINX_DIR, SSL_DIR, NGINX_LOCATIONS_DIR
 )
 # Используем новую базу данных SQLite
 from .database_sqlite import (
@@ -529,59 +532,70 @@ def _redeploy_from_zip(app_info: App, zip_path: Path):
 def _update_nginx_config_for_app(app_name: str, nginx_proxy_target: Optional[str], port: int, ssl_certificate_name: Optional[str]):
     """
     Создает, обновляет или удаляет конфиг Nginx для приложения.
-    Определяет, генерировать ли server-блок (для домена) или location-блок (для подпути).
-    Автоматически добавляет SSL, если указан сертификат.
+    - Если target - это домен (e.g., "app.example.com"), создает server-блок в NGINX_SITES_DIR.
+    - Если target - это путь (e.g., "/test/"), создает location-блок в NGINX_LOCATIONS_DIR.
     """
-    nginx_conf_path = NGINX_SITES_DIR / f"{app_name}.conf"
+    # Сначала удаляем старые файлы из обеих папок, чтобы избежать дубликатов при смене типа
+    site_conf_path = NGINX_SITES_DIR / f"{app_name}.conf"
+    location_conf_path = NGINX_LOCATIONS_DIR / f"{app_name}.conf"
+    if site_conf_path.exists():
+        site_conf_path.unlink()
+    if location_conf_path.exists():
+        location_conf_path.unlink()
 
     if not nginx_proxy_target:
-        if nginx_conf_path.exists():
-            nginx_conf_path.unlink()
-        return
+        return  # Цель не указана, очистка выполнена, выходим.
 
-    # Если это домен/поддомен, а не подпуть
-    is_domain = not nginx_proxy_target.startswith('/')
+    # Определяем тип цели: путь или домен
+    is_path_target = nginx_proxy_target.startswith('/')
 
-    # --- ЛОГИКА SSL ---
-    ssl_config = ""
-    if is_domain and ssl_certificate_name:
-        cert_dir = SSL_DIR / ssl_certificate_name
-        cert_path = (cert_dir / "fullchain.pem").as_posix() # as_posix() для правильных слэшей
-        key_path = (cert_dir / "privkey.pem").as_posix()
+    if is_path_target:
+        # --- ГЕНЕРИРУЕМ ФАЙЛ С LOCATION-БЛОКОМ ---
+        path_prefix = nginx_proxy_target.rstrip('/')
+        # Важно! Nginx требует, чтобы location для /test/ был именно /test/
+        if not path_prefix.endswith('/'):
+            path_prefix += '/'
 
-        if Path(cert_path).exists() and Path(key_path).exists():
-            ssl_config = f"""
+        location_content = f"""
+# Config for {app_name} at location {path_prefix}
+location {path_prefix} {{
+    proxy_pass http://localhost:{port}/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}}
+"""
+        # СОХРАНЯЕМ В ПРАВИЛЬНУЮ ПАПКУ
+        location_conf_path.write_text(location_content, encoding="utf-8")
+
+    else:  # is_domain_target
+        # --- ГЕНЕРИРУЕМ ФАЙЛ С SERVER-БЛОКОМ (эта логика была правильной) ---
+        server_name = nginx_proxy_target
+        ssl_config = ""
+        if ssl_certificate_name:
+            cert_dir = SSL_DIR / ssl_certificate_name
+            cert_path = (cert_dir / "fullchain.pem").as_posix()
+            key_path = (cert_dir / "privkey.pem").as_posix()
+            if Path(cert_path).exists() and Path(key_path).exists():
+                ssl_config = f"""
     listen 443 ssl;
     ssl_certificate {cert_path};
     ssl_certificate_key {key_path};
-
-    # Рекомендуемые настройки безопасности SSL
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
 """
-        else:
-            print(f"WARNING: SSL certificate '{ssl_certificate_name}' not found for app '{app_name}'. Skipping HTTPS setup.")
-
-
-    # --- ГЕНЕРАЦИЯ ШАБЛОНА ---
-    if is_domain:
-        # Это домен или поддомен (например, app.example.com)
+        # HTTP блок
         http_server_block = f"""
 server {{
     listen 80;
-    server_name {nginx_proxy_target};
+    server_name {server_name};
 """
-        # Если есть SSL, делаем редирект с HTTP на HTTPS
         if ssl_config:
-            http_server_block += """
-    location / {
-        return 301 https://$host$request_uri;
-    }
-}
-"""
-        else: # Если SSL нет, то HTTP-блок - основной
-             http_server_block += f"""
+            http_server_block += "    location / { return 301 https://$host$request_uri; }\\n}"
+        else:
+            http_server_block += f"""
     location / {{
         proxy_pass http://localhost:{port};
         proxy_set_header Host $host;
@@ -591,13 +605,13 @@ server {{
     }}
 }}
 """
-        # Если есть SSL, создаем отдельный HTTPS-блок
+        # HTTPS блок (если есть SSL)
         https_server_block = ""
         if ssl_config:
             https_server_block = f"""
 server {{
     {ssl_config}
-    server_name {nginx_proxy_target};
+    server_name {server_name};
 
     location / {{
         proxy_pass http://localhost:{port};
@@ -609,22 +623,8 @@ server {{
 }}
 """
         final_config = http_server_block + https_server_block
-        nginx_conf_path.write_text(final_config, encoding="utf-8")
-
-    else:
-        # Это подпуть (например, /api/v1)
-        path_prefix = nginx_proxy_target.rstrip('/')
-        location_template = f"""
-location {path_prefix}/ {{
-    proxy_pass http://localhost:{port}/;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-}}
-"""
-        nginx_conf_path.write_text(location_template, encoding="utf-8")
-
+        # СОХРАНЯЕМ В ПРАВИЛЬНУЮ ПАПКУ
+        site_conf_path.write_text(final_config, encoding="utf-8")
 
 # --- Эндпоинты API для управления приложениями ---
 
@@ -699,6 +699,15 @@ async def deploy_app(
     """
     if get_app_by_name(name):
         raise HTTPException(status_code=400, detail=f"App with name '{name}' already exists.")
+
+        # --- ИСПРАВЛЕННАЯ ВАЛИДАЦИЯ NGINX TARGET ---
+    if nginx_proxy_target:
+        nginx_proxy_target = nginx_proxy_target.strip()
+        # Если это НЕ путь (не начинается с /), то валидируем его как доменное имя
+        if not nginx_proxy_target.startswith('/'):
+            if not re.match(r"^[a-zA-Z0-9.-]+$", nginx_proxy_target):
+                raise HTTPException(status_code=400,
+                                    detail="Invalid Nginx domain name. Use only letters, numbers, hyphens, and dots.")
 
     # Выдача порта
     apps = get_all_apps()
@@ -931,34 +940,73 @@ def control_app(app_name: str, payload: AppAction, current_user: Annotated[User,
 
 @app.delete("/api/apps/{app_name}")
 def delete_app_api(app_name: str, current_user: Annotated[User, Depends(get_current_active_user)]):
-    """Полное удаление приложения."""
+    """Полное удаление приложения с принудительным завершением процесса."""
     app_info = get_app_by_name(app_name)
     if not app_info:
         raise HTTPException(status_code=404, detail="App not found")
 
     backup_dir = BACKUPS_DIR / app_name
-    nginx_conf_path = NGINX_SITES_DIR / f"{app_name}.conf"
+    site_conf_path = NGINX_SITES_DIR / f"{app_name}.conf"
+    location_conf_path = NGINX_LOCATIONS_DIR / f"{app_name}.conf"
 
     try:
-        # 1. Остановить и удалить службу
-        run_command_sync(f'"{NSSM_PATH}" stop "{app_info.name}"')
-        time.sleep(1)  # Даем время на остановку
-        run_command_sync(f'"{NSSM_PATH}" remove "{app_info.name}" confirm')
+        # 1. Остановить службу через NSSM (вежливая попытка)
+        run_command_sync(f'"{NSSM_PATH}" stop "{app_name}"')
+        time.sleep(1)
 
-        # 2. Удалить файлы приложения
-        if Path(app_info.app_path).exists():
-            shutil.rmtree(app_info.app_path)
+        # 2. НАЙТИ И ПРИНУДИТЕЛЬНО ЗАВЕРШИТЬ ПРОЦЕСС, ИСПОЛЬЗУЮЩИЙ ПОРТ
+        # Это гарантированно освободит лог-файл
+        try:
+            # Команда 'netstat -aon' показывает все соединения и PID процесса
+            # 'findstr' ищет строку с нужным нам портом в состоянии LISTENING
+            netstat_cmd = f'netstat -aon | findstr "LISTENING" | findstr ":{app_info.port}"'
+            code, out, err = run_command_sync(netstat_cmd)
 
-        # 3. Удалить бекапы
+            if code == 0 and out:
+                # out будет выглядеть как "  TCP    127.0.0.1:8007         0.0.0.0:0              LISTENING       2480"
+                parts = out.strip().split()
+                pid = int(parts[-1])
+                print(f"INFO: Found process with PID {pid} listening on port {app_info.port}. Terminating it.")
+                # Принудительно завершаем процесс по его PID
+                os.kill(pid, signal.SIGTERM)  # Более мягкое завершение
+                time.sleep(1)  # Даем время на завершение
+                # Если не помогло, используем более жесткий метод
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except:
+                    pass  # Процесс уже мог завершиться
+                print(f"INFO: Process {pid} terminated.")
+            else:
+                print(f"WARNING: No process found listening on port {app_info.port}. It might have already stopped.")
+
+        except Exception as e:
+            print(f"WARNING: Could not forcefully terminate process for port {app_info.port}. Error: {e}")
+
+        # 3. Удалить службу NSSM
+        run_command_sync(f'"{NSSM_PATH}" remove "{app_name}" confirm')
+
+        # 4. Удалить файлы приложения (теперь это должно сработать с первой попытки)
+        app_path_to_delete = Path(app_info.app_path)
+        if app_path_to_delete.exists():
+            shutil.rmtree(app_path_to_delete)
+
+        # 5. Удалить бекапы
         if backup_dir.exists():
             shutil.rmtree(backup_dir)
 
-        # 4. Удалить конфиг Nginx (если есть) и перезагрузить
-        if nginx_conf_path.exists():
-            nginx_conf_path.unlink()
+        # 6. Удалить конфиг Nginx
+        config_deleted = False
+        if site_conf_path.exists():
+            site_conf_path.unlink()
+            config_deleted = True
+        if location_conf_path.exists():
+            location_conf_path.unlink()
+            config_deleted = True
+
+        if config_deleted:
             run_command_sync(NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
 
-        # 5. Удалить из БД
+        # 7. Удалить из БД
         delete_app(app_name)
         return {"message": f"App '{app_name}' and its configs, backups, and service deleted successfully."}
     except Exception as e:
