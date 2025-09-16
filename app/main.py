@@ -463,7 +463,8 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
             name=name, port=app_data.port, app_path=str(app_path), log_path=str(log_file_path),
             start_script=final_start_script,
             status=final_status, python_executable=python_executable, nginx_proxy_target=app_data.nginx_proxy_target,
-            env_vars=app_data.env_vars, ssl_certificate_name=app_data.ssl_certificate_name
+            env_vars=app_data.env_vars, ssl_certificate_name=app_data.ssl_certificate_name,
+            parent_domain=app_data.parent_domain
         )
         add_or_update_app(new_app)
         await manager.send_message(
@@ -722,6 +723,7 @@ async def deploy_app(
         python_executable: Optional[str] = Form(None),
         nginx_proxy_target: Optional[str] = Form(None),
         ssl_certificate_name: Optional[str] = Form(None),
+        parent_domain: Optional[str] = Form(None),
         env_vars_str: Optional[str] = Form(None),
         zip_file: UploadFile = File(...)
 ):
@@ -781,6 +783,7 @@ async def deploy_app(
         python_executable=python_executable,
         nginx_proxy_target=nginx_proxy_target,
         ssl_certificate_name=ssl_certificate_name,
+        parent_domain=parent_domain,
         env_vars=env_vars
     )
 

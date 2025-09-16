@@ -1066,6 +1066,20 @@
             e.preventDefault();
             const formData = new FormData(deployForm);
 
+            const nginxTarget = formData.get('nginx_proxy_target').trim();
+
+            // Если это путь, нам НУЖНО добавить parent_domain в formData
+            if (nginxTarget && nginxTarget.startsWith('/')) {
+                const parentDomainSelect = document.getElementById('deploy-parent-domain');
+                const parentDomain = parentDomainSelect.value;
+
+                if (!parentDomain) {
+                    showToast('Для маршрутизации по пути необходимо выбрать родительский домен!', 'error');
+                    return; // Прерываем отправку формы
+                }
+                formData.append('parent_domain', parentDomain);
+            }
+
             const sslCertName = document.getElementById('deploy-ssl-cert-select').value;
             if (sslCertName) {
                 formData.set('ssl_certificate_name', sslCertName);
