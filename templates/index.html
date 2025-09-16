@@ -1096,15 +1096,47 @@
             if (!(await customConfirm('Перезагрузить Nginx?', 'Подтверждение перезагрузки'))) return;
             const button = document.getElementById('reload-nginx-btn');
             button.disabled = true; button.textContent = 'Перезагрузка...';
+
             try {
-                const response = await authedFetch('/api/nginx/reload', { method: 'POST' });
-                const result = await response.json();
-                if (!response.ok) throw new Error(result.detail);
-                showToast(result.message, 'success');
+                // ИЗМЕНЕНИЕ ЗДЕСЬ
+                // Мы отправляем запрос, но не ждем полноценного ответа.
+                // fetch сам по себе отправит запрос, а then/catch сработают
+                // в зависимости от того, успеет ли сервер ответить.
+
+                const responsePromise = authedFetch('/api/nginx/reload', { method: 'POST' });
+
+                // Даем серверу немного времени на обработку, прежде чем считать, что все хорошо.
+                setTimeout(() => {
+                    showToast("Команда перезагрузки Nginx отправлена. Проверьте результат самостоятельно.", 'success');
+                    button.disabled = false;
+                    button.textContent = 'Перезагрузить Nginx';
+                }, 1000); // 1 секунда
+
+                // Мы все еще можем попытаться обработать ответ, если он придет
+                const response = await responsePromise;
+                if (response && response.ok) {
+                    const result = await response.json();
+                    console.log("Получен ответ от сервера Nginx reload:", result.message);
+                    // Тост уже был показан, так что можно ничего не делать или обновить его
+                } else if (response) {
+                     const errorData = await response.json();
+                     throw new Error(errorData.detail || `Server responded with ${response.status}`);
+                }
+
             } catch (error) {
-                showToast(`Ошибка перезагрузки: ${error.message}`, 'error');
-            } finally {
-                button.disabled = false; button.textContent = 'Перезагрузить Nginx';
+                // Этот блок сработает либо если сервер ответил с ошибкой,
+                // либо если соединение было разорвано (как в случае ERR_EMPTY_RESPONSE)
+                console.error("Ошибка при перезагрузке Nginx:", error.message);
+                if (error.message.includes('Failed to fetch')) {
+                     // Это как раз наш случай. Мы уже показали "успешный" тост.
+                     // Можно добавить дополнительное сообщение в консоль для отладки.
+                     console.warn("Fetch failed, likely due to server/proxy restarting. This is expected.");
+                } else {
+                    // Если пришла явная ошибка от сервера
+                    showToast(`Ошибка перезагрузки: ${error.message}`, 'error');
+                    button.disabled = false;
+                    button.textContent = 'Перезагрузить Nginx';
+                }
             }
         }
 
