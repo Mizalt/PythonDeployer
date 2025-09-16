@@ -629,7 +629,7 @@ location {path_prefix} {{
     listen 443 ssl;
     ssl_certificate {cert_path.as_posix()};
     ssl_certificate_key {key_path.as_posix()};
-    ssl_protocols TLSv1.2 TLSvv1.3;
+    ssl_protocols TLSv1.2 TLSv1.3;
 """
 
         include_line = f"    include {location_folder_for_domain.as_posix()}/*.conf;"
