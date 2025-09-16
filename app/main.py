@@ -431,8 +431,12 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
         # 6. Автоматизация Nginx
         if app_data.nginx_proxy_target:
             await manager.send_message(f"[6/7] Настройка Nginx для '{app_data.nginx_proxy_target}'...", task_id)
-            await loop.run_in_executor(None, _update_nginx_config_for_app, name, app_data.nginx_proxy_target,
-                                       app_data.port, app_data.ssl_certificate_name)
+            await loop.run_in_executor(None, _update_nginx_config_for_app,
+                                       name,
+                                       app_data.nginx_proxy_target,
+                                       app_data.port,
+                                       app_data.ssl_certificate_name,
+                                       app_data.parent_domain)
             nginx_config_created = True  # Флаг того, что конфиг создан
             await manager.send_message(f"Конфигурация Nginx сохранена в {nginx_conf_path}", task_id)
             code, out, err = await run_sync_in_thread(NGINX_RELOAD_CMD)
@@ -734,6 +738,19 @@ async def deploy_app(
     if get_app_by_name(name):
         raise HTTPException(status_code=400, detail=f"App with name '{name}' already exists.")
 
+    if nginx_proxy_target and nginx_proxy_target.strip().startswith('/'):
+        if not parent_domain:
+            # Эта проверка дублируется, но она важна на случай прямого API вызова
+            raise HTTPException(status_code=400, detail="A parent domain must be selected for path-based routing.")
+
+        all_apps = get_all_apps()
+        for app in all_apps:
+            if app.nginx_proxy_target == nginx_proxy_target.strip() and app.parent_domain == parent_domain:
+                raise HTTPException(
+                    status_code=409,  # 409 Conflict - более подходящий код
+                    detail=f"Path '{nginx_proxy_target}' is already in use by app '{app.name}' on domain '{parent_domain}'. Please choose a different path."
+                )
+
         # --- ИСПРАВЛЕННАЯ ВАЛИДАЦИЯ NGINX TARGET ---
     if nginx_proxy_target:
         nginx_proxy_target = nginx_proxy_target.strip()
@@ -806,6 +823,20 @@ def update_app_config(
     if not app_info:
         raise HTTPException(status_code=404, detail="App not found")
 
+    if config.nginx_proxy_target and config.nginx_proxy_target.strip().startswith('/'):
+        if not config.parent_domain:
+            raise HTTPException(status_code=400, detail="A parent domain must be selected for path-based routing.")
+
+        all_apps = get_all_apps()
+        for app in all_apps:
+            # Ищем конфликт, но ИСКЛЮЧАЕМ само приложение, которое мы редактируем
+            if app.name != app_name:
+                if app.nginx_proxy_target == config.nginx_proxy_target.strip() and app.parent_domain == config.parent_domain:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Path '{config.nginx_proxy_target}' is already in use by app '{app.name}' on domain '{config.parent_domain}'. Please choose a different path."
+                    )
+
     # Проверка, не занят ли новый порт другим приложением
     if config.port != app_info.port:
         apps = get_all_apps()
@@ -841,7 +872,11 @@ def update_app_config(
 
         # 3. Обновить конфиг Nginx, если нужно
         if nginx_config_changed:
-            _update_nginx_config_for_app(app_name, config.nginx_proxy_target, config.port, config.ssl_certificate_name)
+            _update_nginx_config_for_app(app_name,
+                                         config.nginx_proxy_target,
+                                         config.port,
+                                         config.ssl_certificate_name,
+                                         config.parent_domain)
             code, out, err = run_command_sync(NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
             if code != 0:
                 print(f"Warning: Failed to reload Nginx for {app_name}: {err or out}")
@@ -981,67 +1016,60 @@ def delete_app_api(app_name: str, current_user: Annotated[User, Depends(get_curr
         raise HTTPException(status_code=404, detail="App not found")
 
     backup_dir = BACKUPS_DIR / app_name
-    site_conf_path = NGINX_SITES_DIR / f"{app_name}.conf"
-    location_conf_path = NGINX_LOCATIONS_DIR / f"{app_name}.conf"
 
     try:
-        # 1. Остановить службу через NSSM (вежливая попытка)
+        # 1. Остановить и принудительно завершить процесс
         run_command_sync(f'"{NSSM_PATH}" stop "{app_name}"')
         time.sleep(1)
-
-        # 2. НАЙТИ И ПРИНУДИТЕЛЬНО ЗАВЕРШИТЬ ПРОЦЕСС, ИСПОЛЬЗУЮЩИЙ ПОРТ
-        # Это гарантированно освободит лог-файл
         try:
-            # Команда 'netstat -aon' показывает все соединения и PID процесса
-            # 'findstr' ищет строку с нужным нам портом в состоянии LISTENING
             netstat_cmd = f'netstat -aon | findstr "LISTENING" | findstr ":{app_info.port}"'
             code, out, err = run_command_sync(netstat_cmd)
-
             if code == 0 and out:
-                # out будет выглядеть как "  TCP    127.0.0.1:8007         0.0.0.0:0              LISTENING       2480"
-                parts = out.strip().split()
-                pid = int(parts[-1])
-                print(f"INFO: Found process with PID {pid} listening on port {app_info.port}. Terminating it.")
-                # Принудительно завершаем процесс по его PID
-                os.kill(pid, signal.SIGTERM)  # Более мягкое завершение
-                time.sleep(1)  # Даем время на завершение
-                # Если не помогло, используем более жесткий метод
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except:
-                    pass  # Процесс уже мог завершиться
-                print(f"INFO: Process {pid} terminated.")
-            else:
-                print(f"WARNING: No process found listening on port {app_info.port}. It might have already stopped.")
+                pid = int(out.strip().split()[-1])
+                os.kill(pid, signal.SIGTERM)
+                time.sleep(0.5)
+                os.kill(pid, signal.SIGKILL)
+        except Exception:
+            pass
 
-        except Exception as e:
-            print(f"WARNING: Could not forcefully terminate process for port {app_info.port}. Error: {e}")
-
-        # 3. Удалить службу NSSM
+        # 2. Удалить службу NSSM
         run_command_sync(f'"{NSSM_PATH}" remove "{app_name}" confirm')
 
-        # 4. Удалить файлы приложения (теперь это должно сработать с первой попытки)
-        app_path_to_delete = Path(app_info.app_path)
-        if app_path_to_delete.exists():
-            shutil.rmtree(app_path_to_delete)
+        # 3. Удалить файлы приложения
+        if Path(app_info.app_path).exists():
+            shutil.rmtree(app_info.app_path)
 
-        # 5. Удалить бекапы
+        # 4. Удалить бекапы
         if backup_dir.exists():
             shutil.rmtree(backup_dir)
 
-        # 6. Удалить конфиг Nginx
+        # --- НАЧАЛО ИСПРАВЛЕНИЙ ---
+        # 5. Умное удаление конфига Nginx
         config_deleted = False
-        if site_conf_path.exists():
-            site_conf_path.unlink()
-            config_deleted = True
-        if location_conf_path.exists():
-            location_conf_path.unlink()
-            config_deleted = True
+        # Если это домен, удаляем файл из nginx-sites и папку из nginx-locations
+        if app_info.nginx_proxy_target and not app_info.nginx_proxy_target.startswith('/'):
+            site_conf_path = NGINX_SITES_DIR / f"{app_name}.conf"
+            if site_conf_path.exists():
+                site_conf_path.unlink()
+                config_deleted = True
+
+            location_folder = NGINX_LOCATIONS_DIR / app_info.nginx_proxy_target
+            if location_folder.exists():
+                shutil.rmtree(location_folder)
+
+        # Если это путь, находим его конфиг в папке родительского домена и удаляем
+        elif app_info.parent_domain:
+            location_folder = NGINX_LOCATIONS_DIR / app_info.parent_domain
+            location_conf_path = location_folder / f"{app_name}.conf"
+            if location_conf_path.exists():
+                location_conf_path.unlink()
+                config_deleted = True
 
         if config_deleted:
             run_command_sync(NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
+        # --- КОНЕЦ ИСПРАВЛЕНИЙ ---
 
-        # 7. Удалить из БД
+        # 6. Удалить из БД
         delete_app(app_name)
         return {"message": f"App '{app_name}' and its configs, backups, and service deleted successfully."}
     except Exception as e:
@@ -1230,7 +1258,7 @@ async def list_nginx_configs(current_user: Annotated[User, Depends(get_current_a
 
     # 3. Сканируем папку с конфигами путей (location блоки)
     if NGINX_LOCATIONS_DIR.exists():
-        for p in sorted(NGINX_LOCATIONS_DIR.glob("*.conf")):
+        for p in sorted(NGINX_LOCATIONS_DIR.glob("**/*.conf")):  # <--- ПРАВИЛЬНО
             add_file(str(p))
 
     return NginxConfigList(files=files)
@@ -1311,17 +1339,15 @@ def reload_nginx(current_user: Annotated[User, Depends(get_current_active_user)]
 def _update_deployer_nginx_config(domain: Optional[str], ssl_cert_name: Optional[str]):
     """
     (HELPER) Создает или обновляет главный конфиг Nginx для самого Deployer'а.
+    Версия 2.0: Упрощенная и корректная логика для всех сценариев.
     """
-    # Используем фиксированное имя файла, чтобы всегда его перезаписывать
     config_path = NGINX_SITES_DIR / "deployer-main.conf"
-
-    # Получаем порт Deployer'а из переменной окружения или по умолчанию
     deployer_port = os.getenv("PORT", "7999")
 
+    # --- Сценарий 1: Нет домена (доступ по IP) ---
     if not domain:
-        # --- Конфигурация по умолчанию (доступ по IP) ---
         config_content = f"""
-# Main configuration for Python Deployer UI (HTTP only)
+# Main configuration for Python Deployer UI (IP Access)
 server {{
     listen 80;
     server_name _;
@@ -1339,37 +1365,12 @@ server {{
     }}
 }}
 """
-    else:
-        # --- Конфигурация с доменом и, возможно, SSL ---
-        ssl_config = ""
-        if ssl_cert_name:
-            cert_dir = SSL_DIR / ssl_cert_name
-            cert_path = (cert_dir / "fullchain.pem").as_posix()
-            key_path = (cert_dir / "privkey.pem").as_posix()
-            if Path(cert_path).exists() and Path(key_path).exists():
-                ssl_config = f"""
-    listen 443 ssl;
-    ssl_certificate {cert_path};
-    ssl_certificate_key {key_path};
-    ssl_protocols TLSv1.2 TLSv1.3;
-"""
+        config_path.write_text(config_content, encoding="utf-8")
+        return  # Завершаем выполнение
 
-        http_block = f"""
-server {{
-    listen 80;
-    server_name {domain};
-    location / {{
-        {'return 301 https://$host$request_uri;' if ssl_config else f'proxy_pass http://127.0.0.1:{deployer_port};'}
-    }}
-}}
-"""
-        https_block = ""
-        if ssl_config:
-            https_block = f"""
-server {{
-    {ssl_config}
-    server_name {domain};
-
+    # --- Сценарий 2: Есть домен ---
+    # Общие блоки, которые мы будем использовать
+    proxy_block_for_deployer = f"""
     location / {{
         proxy_pass http://127.0.0.1:{deployer_port};
         proxy_set_header Host $host;
@@ -1380,32 +1381,67 @@ server {{
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_read_timeout 86400;
-    }}
+    }}"""
 
-    # Важно: включаем конфиги для других приложений, управляемых Deployer'ом
-    include {(NGINX_LOCATIONS_DIR.as_posix())}/*.conf;
-}}
+    # ПРАВИЛЬНЫЙ РЕКУРСИВНЫЙ INCLUDE
+    include_line_for_apps = f"    include {(NGINX_LOCATIONS_DIR.as_posix())}/*/*.conf;"
+
+    # Проверяем, есть ли валидный SSL сертификат
+    use_ssl = False
+    ssl_config_block = ""
+    if ssl_cert_name:
+        cert_dir = SSL_DIR / ssl_cert_name
+        cert_path = cert_dir / "fullchain.pem"
+        key_path = cert_dir / "privkey.pem"
+        if cert_path.exists() and key_path.exists():
+            use_ssl = True
+            ssl_config_block = f"""
+    listen 443 ssl;
+    ssl_certificate {cert_path.as_posix()};
+    ssl_certificate_key {key_path.as_posix()};
+    ssl_protocols TLSv1.2 TLSv1.3;
 """
 
-        # Если SSL не настроен, основной блок будет в HTTP
-        if not ssl_config:
-            http_block = f"""
+    # Собираем финальный конфиг в зависимости от наличия SSL
+    final_config = ""
+    if use_ssl:
+        # --- Сценарий 2.1: Домен с SSL ---
+        final_config = f"""
+# Main configuration for Python Deployer UI ({domain} with SSL)
+# HTTP redirect to HTTPS
+server {{
+    listen 80;
+    server_name {domain};
+    location / {{
+        return 301 https://$host$request_uri;
+    }}
+}}
+
+# HTTPS server
+server {{
+    {ssl_config_block}
+    server_name {domain};
+
+    {proxy_block_for_deployer}
+
+    {include_line_for_apps}
+}}
+"""
+    else:
+        # --- Сценарий 2.2: Домен БЕЗ SSL ---
+        final_config = f"""
+# Main configuration for Python Deployer UI ({domain} HTTP-only)
 server {{
     listen 80;
     server_name {domain};
 
-    location / {{
-        proxy_pass http://127.0.0.1:{deployer_port};
-        proxy_set_header Host $host;
-        # ... все остальные proxy_set_header ...
-    }}
+    {proxy_block_for_deployer}
 
-    include {(NGINX_LOCATIONS_DIR.as_posix())}/*.conf;
+    {include_line_for_apps}
 }}
 """
-        config_content = http_block + https_block
 
-    config_path.write_text(config_content, encoding="utf-8")
+    config_path.write_text(final_config, encoding="utf-8")
 
 
 @app.post("/api/deployer/settings")
@@ -1464,8 +1500,7 @@ async def list_nginx_domains(current_user: Annotated[User, Depends(get_current_a
     domains = []
     for conf_file in NGINX_SITES_DIR.glob("*.conf"):
         # Пропускаем конфиг самого деплоера
-        if conf_file.name == "deployer-main.conf":
-            continue
+
         content = conf_file.read_text(encoding="utf-8")
         match = re.search(r"server_name\s+([^;]+);", content)
         if match:

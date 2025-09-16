@@ -1126,6 +1126,8 @@
             socket.onmessage = (event) => {
                 if (event.data === "CLOSE_CONNECTION") {
                     logOutput.textContent += '\n--- Процесс завершен. ---';
+                    showToast('Развертывание завершено, обновляю список...', 'success');
+                    fetchApps();
                     socket.close(); return;
                 }
                 logOutput.textContent += event.data + '\n';
@@ -1134,7 +1136,6 @@
             socket.onclose = () => {
                 logOutput.textContent += '\n\nСоединение с сервером закрыто. Можете закрыть это окно.';
                 closeLogBtn.disabled = false;
-                fetchApps();
             };
             socket.onerror = (error) => {
                 logOutput.textContent += `\n\n--- ОШИБКА WEBSOCKET: ${error.message}. Соединение разорвано. ---`;
@@ -1152,8 +1153,25 @@
             settingsModalTitle.textContent = `Настройки для "${appName}"`;
             document.getElementById('settings-port').value = appData.port;
             document.getElementById('settings-start-script').value = appData.start_script;
-            // ИЗМЕНЕНО: Загружаем значение из нового поля
-            document.getElementById('settings-path-domain').value = appData.nginx_proxy_target || '';
+
+            const pathDomainInput = document.getElementById('settings-path-domain');
+            pathDomainInput.value = appData.nginx_proxy_target || '';
+
+            // --- НАЧАЛО ИЗМЕНЕНИЙ ---
+            // Сразу после заполнения поля, проверяем его значение и показываем/скрываем dropdown
+            const parentDomainGroup = document.getElementById('settings-parent-domain-group');
+            const parentDomainSelect = document.getElementById('settings-parent-domain');
+
+            if (pathDomainInput.value.startsWith('/')) {
+                parentDomainGroup.classList.remove('hidden');
+                // Также устанавливаем сохраненное значение родительского домена
+                parentDomainSelect.value = appData.parent_domain || '';
+            } else {
+                parentDomainGroup.classList.add('hidden');
+                parentDomainSelect.value = '';
+            }
+            // --- КОНЕЦ ИЗМЕНЕНИЙ ---
+
             document.getElementById('settings-ssl-cert-select').value = appData.ssl_certificate_name || '';
             const envVarsString = Object.entries(appData.env_vars || {}).map(([k, v]) => `${k}=${v}`).join('\n');
             document.getElementById('settings-env-vars').value = envVarsString;
@@ -1188,6 +1206,7 @@
                 start_script: document.getElementById('settings-start-script').value,
                 nginx_proxy_target: document.getElementById('settings-path-domain').value || null,
                 ssl_certificate_name: document.getElementById('settings-ssl-cert-select').value || null,
+                parent_domain: document.getElementById('settings-parent-domain').value || null,
                 env_vars: envVars
             };
 

@@ -37,6 +37,7 @@ class AppConfigUpdate(BaseModel):
     nginx_proxy_target: Optional[str] = None
     env_vars: Optional[Dict[str, str]] = Field(default_factory=dict)
     ssl_certificate_name: Optional[str] = None
+    parent_domain: Optional[str] = None
 
 class AppAction(BaseModel):
     action: Literal["start", "stop", "restart"]
