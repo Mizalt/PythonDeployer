@@ -28,7 +28,8 @@ NGINX_SITES_DIR = DATA_DIR / "nginx-sites"
 NGINX_SITES_DIR.mkdir(exist_ok=True)
 
 # ИЗМЕНЕНО: Команда для перезагрузки Nginx теперь использует новую переменную
-NGINX_RELOAD_CMD = f'"{NGINX_DIR / "nginx.exe"}" -p "{NGINX_DIR}" -s reload'
+NGINX_RELOAD_CMD = "net stop nginx && net start nginx"
+
 
 # --- Настройки NSSM ---
 NSSM_PATH = "C:\\nssm-2.24\\win64\\nssm.exe"
@@ -50,3 +51,4 @@ PYTHON_EXECUTABLES = {
 # Версия по умолчанию, если не выбрана
 
 DEFAULT_PYTHON_EXECUTABLE = list(PYTHON_EXECUTABLES.values())[0]
+
