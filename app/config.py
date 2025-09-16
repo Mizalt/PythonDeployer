@@ -18,7 +18,7 @@ SSL_DIR.mkdir(exist_ok=True)
 
 
 # --- Настройки Nginx ---
-NGINX_DIR = Path("C:\\nginx-1.28.0")
+NGINX_DIR = Path("C:\\tools\\nginx-1.29.1")
 
 # Путь к ОСНОВНОМУ файлу конфигурации Nginx
 NGINX_MAIN_CONF_FILE = NGINX_DIR / "conf" / "nginx.conf"
@@ -48,4 +48,5 @@ PYTHON_EXECUTABLES = {
     "Python 3.12 (System)": "C:\\Users\\Администратор\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
 }
 # Версия по умолчанию, если не выбрана
+
 DEFAULT_PYTHON_EXECUTABLE = list(PYTHON_EXECUTABLES.values())[0]
