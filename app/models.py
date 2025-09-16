@@ -86,3 +86,12 @@ class UserInDB(User):
 class Token(BaseModel):
     access_token: str
     token_type: str
+
+
+class DeployerSettingsUpdate(BaseModel):
+    domain: Optional[str] = None
+    ssl_certificate_name: Optional[str] = None
+
+class DeployerSettings(BaseModel):
+    domain: Optional[str] = None
+    ssl_certificate_name: Optional[str] = None

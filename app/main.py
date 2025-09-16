@@ -43,7 +43,7 @@ from .database_sqlite import (
 from .models import (
     App, AppAction, NginxConfig, DeploymentHistory, RestoreRequest,
     AppLogs, Token, AppCreate, AppConfigUpdate, NginxConfigList,
-    SSLCertificateFile
+    SSLCertificateFile, DeployerSettingsUpdate, DeployerSettings
 )
 # Добавляем асинхронный и синхронный запуск команд
 from .utils import run_command_sync, find_free_port, run_command_async
@@ -350,7 +350,7 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
         await manager.send_message(f"[3/7] Создание venv с помощью '{python_executable}'...", task_id)
         try:
             # yield from (async for) для потоковой передачи логов
-            async for log_line in run_command_async(f'"{python_executable}" -m venv "{venv_path}"', cwd=str(app_path)):
+            async for log_line in run_command_async(f'{python_executable} -m venv "{venv_path}"', cwd=str(app_path)):
                 await manager.send_message(log_line, task_id)
         except subprocess.CalledProcessError:
             raise Exception("Не удалось создать виртуальное окружение. Проверьте путь к Python и права доступа.")
@@ -1135,33 +1135,40 @@ def get_app_logs(app_name: str, current_user: Annotated[User, Depends(get_curren
 
 def validate_nginx_path(target_path: Path, for_delete: bool = False):
     """
-    Helper: разрешает редактировать/удалять только конфиги сайтов или главный конфиг.
+    Helper: разрешает редактировать/удалять только конфиги сайтов, путей или главный конфиг.
     ЗАПРЕЩАЕТ УДАЛЯТЬ ГЛАВНЫЙ КОНФИГ.
     """
     try:
         abs_target_str = str(target_path.absolute())
         abs_main_conf_str = str(NGINX_MAIN_CONF_FILE.absolute())
         abs_sites_dir_str = str(NGINX_SITES_DIR.absolute())
+        abs_locations_dir_str = str(NGINX_LOCATIONS_DIR.absolute()) # <-- НОВАЯ СТРОКА
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid path format.")
 
     is_main_conf = (abs_target_str.lower() == abs_main_conf_str.lower())
     is_sites_conf = abs_target_str.lower().startswith(abs_sites_dir_str.lower())
+    is_locations_conf = abs_target_str.lower().startswith(abs_locations_dir_str.lower()) # <-- НОВАЯ СТРОКА
 
     # ЗАЩИТА: Запрещаем удалять главный nginx.conf
     if for_delete and is_main_conf:
         raise HTTPException(status_code=403, detail="Deleting the main nginx.conf is forbidden.")
 
-    if not (is_main_conf or is_sites_conf):
-        raise HTTPException(status_code=403,
-                            detail="Editing this path is not allowed. Only main config or site configs are permitted.")
+    # РАЗРЕШАЕМ ЛЮБУЮ ИЗ ТРЕХ ЛОКАЦИЙ
+    if not (is_main_conf or is_sites_conf or is_locations_conf):
+        raise HTTPException(
+            status_code=403,
+            detail="Editing this path is not allowed. Only main config, site configs, or location configs are permitted."
+        )
 
-    # Если это новый файл, убедимся, что его родительская директория существует и это NGINX_SITES_DIR
-    if not target_path.exists() and not target_path.parent.exists():
-        raise HTTPException(status_code=400, detail="Directory does not exist for new config.")
-    if not target_path.exists() and not target_path.parent.samefile(NGINX_SITES_DIR):
-        raise HTTPException(status_code=403,
-                            detail="New config files can only be created in the Nginx sites directory.")
+    # Если это новый файл, убедимся, что его родительская директория существует и это ОДНА ИЗ РАЗРЕШЕННЫХ
+    if not target_path.exists():
+        allowed_parent_dirs = [NGINX_SITES_DIR, NGINX_LOCATIONS_DIR]
+        if not any(target_path.parent.samefile(d) for d in allowed_parent_dirs):
+             raise HTTPException(
+                status_code=403,
+                detail="New config files can only be created in the Nginx sites or locations directory."
+            )
 
 
 @app.get("/api/nginx/configs/list", response_model=NginxConfigList)
@@ -1169,15 +1176,27 @@ async def list_nginx_configs(current_user: Annotated[User, Depends(get_current_a
     """Возвращает список доступных для редактирования конфигов Nginx."""
 
     files = []
+    seen_files = set()  # Чтобы избежать дубликатов, если вдруг они появятся
 
-    # Добавляем основной файл, если он существует
+    # Функция-помощник для добавления файлов
+    def add_file(path_str):
+        if path_str not in seen_files:
+            files.append(path_str)
+            seen_files.add(path_str)
+
+    # 1. Добавляем основной файл
     if NGINX_MAIN_CONF_FILE.exists():
-        files.append(str(NGINX_MAIN_CONF_FILE))
+        add_file(str(NGINX_MAIN_CONF_FILE))
 
-    # Затем сканируем папку с конфигами сайтов
+    # 2. Сканируем папку с конфигами сайтов (server блоки)
     if NGINX_SITES_DIR.exists():
-        site_configs = sorted([str(p) for p in NGINX_SITES_DIR.glob("*.conf")])
-        files.extend(site_configs)
+        for p in sorted(NGINX_SITES_DIR.glob("*.conf")):
+            add_file(str(p))
+
+    # 3. Сканируем папку с конфигами путей (location блоки)
+    if NGINX_LOCATIONS_DIR.exists():
+        for p in sorted(NGINX_LOCATIONS_DIR.glob("*.conf")):
+            add_file(str(p))
 
     return NginxConfigList(files=files)
 
@@ -1252,3 +1271,152 @@ def reload_nginx(current_user: Annotated[User, Depends(get_current_active_user)]
         # Nginx часто выводит ошибки в stdout, поэтому объединяем
         raise HTTPException(status_code=500, detail=f"Failed to reload Nginx: {err or out}")
     return {"message": "Nginx reloaded successfully."}
+
+
+def _update_deployer_nginx_config(domain: Optional[str], ssl_cert_name: Optional[str]):
+    """
+    (HELPER) Создает или обновляет главный конфиг Nginx для самого Deployer'а.
+    """
+    # Используем фиксированное имя файла, чтобы всегда его перезаписывать
+    config_path = NGINX_SITES_DIR / "deployer-main.conf"
+
+    # Получаем порт Deployer'а из переменной окружения или по умолчанию
+    deployer_port = os.getenv("PORT", "7999")
+
+    if not domain:
+        # --- Конфигурация по умолчанию (доступ по IP) ---
+        config_content = f"""
+# Main configuration for Python Deployer UI (HTTP only)
+server {{
+    listen 80;
+    server_name _;
+
+    location / {{
+        proxy_pass http://127.0.0.1:{deployer_port};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 86400;
+    }}
+}}
+"""
+    else:
+        # --- Конфигурация с доменом и, возможно, SSL ---
+        ssl_config = ""
+        if ssl_cert_name:
+            cert_dir = SSL_DIR / ssl_cert_name
+            cert_path = (cert_dir / "fullchain.pem").as_posix()
+            key_path = (cert_dir / "privkey.pem").as_posix()
+            if Path(cert_path).exists() and Path(key_path).exists():
+                ssl_config = f"""
+    listen 443 ssl;
+    ssl_certificate {cert_path};
+    ssl_certificate_key {key_path};
+    ssl_protocols TLSv1.2 TLSv1.3;
+"""
+
+        http_block = f"""
+server {{
+    listen 80;
+    server_name {domain};
+    location / {{
+        {'return 301 https://$host$request_uri;' if ssl_config else f'proxy_pass http://127.0.0.1:{deployer_port};'}
+    }}
+}}
+"""
+        https_block = ""
+        if ssl_config:
+            https_block = f"""
+server {{
+    {ssl_config}
+    server_name {domain};
+
+    location / {{
+        proxy_pass http://127.0.0.1:{deployer_port};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 86400;
+    }}
+
+    # Важно: включаем конфиги для других приложений, управляемых Deployer'ом
+    include {(NGINX_LOCATIONS_DIR.as_posix())}/*.conf;
+}}
+"""
+
+        # Если SSL не настроен, основной блок будет в HTTP
+        if not ssl_config:
+            http_block = f"""
+server {{
+    listen 80;
+    server_name {domain};
+
+    location / {{
+        proxy_pass http://127.0.0.1:{deployer_port};
+        proxy_set_header Host $host;
+        # ... все остальные proxy_set_header ...
+    }}
+
+    include {(NGINX_LOCATIONS_DIR.as_posix())}/*.conf;
+}}
+"""
+        config_content = http_block + https_block
+
+    config_path.write_text(config_content, encoding="utf-8")
+
+
+@app.post("/api/deployer/settings")
+async def update_deployer_settings(
+        settings: DeployerSettingsUpdate,
+        current_user: Annotated[User, Depends(get_current_active_user)]
+):
+    """Обновляет настройки доступа к самому Deployer'у."""
+    try:
+        _update_deployer_nginx_config(settings.domain, settings.ssl_certificate_name)
+
+        # Перезагружаем Nginx, чтобы применить изменения
+        code, out, err = run_command_sync(NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
+        if code != 0:
+            raise HTTPException(status_code=500, detail=f"Failed to reload Nginx: {err or out}")
+
+        return {"message": "Deployer settings updated successfully. Nginx has been reloaded."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/deployer/settings", response_model=DeployerSettings)
+async def get_deployer_settings(current_user: Annotated[User, Depends(get_current_active_user)]):
+    """Получает текущие настройки доступа к Deployer'у из конфига Nginx."""
+    config_path = NGINX_SITES_DIR / "deployer-main.conf"
+    domain = None
+    ssl_cert_name = None
+
+    if config_path.exists():
+        try:
+            content = config_path.read_text(encoding="utf-8")
+
+            # Ищем домен (server_name), но игнорируем плейсхолдер "_"
+            domain_match = re.search(r"server_name\s+([^;]+);", content)
+            if domain_match:
+                found_domain = domain_match.group(1).strip()
+                if found_domain != "_":
+                    domain = found_domain
+
+            # Ищем путь к сертификату и извлекаем из него имя
+            cert_match = re.search(r"ssl_certificate\s+.*?/ssl/([^/]+)/", content)
+            if cert_match:
+                ssl_cert_name = cert_match.group(1).strip()
+
+        except Exception as e:
+            print(f"Error parsing deployer-main.conf: {e}")
+            # В случае ошибки просто вернем пустые значения
+
+    return DeployerSettings(domain=domain, ssl_certificate_name=ssl_cert_name)

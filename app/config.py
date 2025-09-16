@@ -34,7 +34,7 @@ NGINX_LOCATIONS_DIR.mkdir(exist_ok=True)
 NGINX_RELOAD_CMD = "net stop nginx && net start nginx"
 
 # --- Настройки NSSM ---
-NSSM_PATH = "C:\\nssm-2.24\\win64\\nssm.exe"
+NSSM_PATH = "C:\\ProgramData\\chocolatey\\bin\\nssm.exe"
 
 # --- Настройки сети ---
 BASE_PORT = 8001
@@ -48,7 +48,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 120 # Увеличим время жизни то�
 # Укажите пути к исполняемым файлам разных версий Python на вашем сервере.
 # Это позволит пользователям выбирать версию при деплое.
 PYTHON_EXECUTABLES = {
-    "Python 3.12 (System)": "C:\\Users\\Администратор\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+    "Python 3.12 (System)": "C:\\Python312\\python.exe",
 }
 # Версия по умолчанию, если не выбрана
 DEFAULT_PYTHON_EXECUTABLE = list(PYTHON_EXECUTABLES.values())[0]

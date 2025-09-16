@@ -389,6 +389,7 @@
     <div class="tabs">
         <button class="tab-button active" data-tab="deployer">Приложения</button>
         <button class="tab-button" data-tab="nginx">Nginx Конфигурация</button>
+        <button class="tab-button" data-tab="settings">Настройки Deployer</button>
     </div>
     <div id="deployer" class="tab-content active">
         <div class="card">
@@ -488,6 +489,28 @@
                 <button id="reload-nginx-btn">Перезагрузить Nginx</button>
                 <button id="save-nginx-btn">Сохранить изменения</button>
             </div>
+        </div>
+    </div>
+
+    <div id="settings" class="tab-content">
+        <div class="card">
+            <h2>Настройки доступа к панели Deployer</h2>
+            <p style="color: #666; margin-top: -1rem; margin-bottom: 2rem;">
+                Здесь вы можете настроить домен и SSL-сертификат для доступа к этой панели управления.
+            </p>
+            <form id="deployer-settings-form">
+                <label for="deployer-domain">Домен панели:</label>
+                <input type="text" id="deployer-domain" name="domain" placeholder="Оставьте пустым для доступа по IP">
+
+                <label for="deployer-ssl-cert-select">SSL Сертификат:</label>
+                <select id="deployer-ssl-cert-select" name="ssl_certificate_name">
+                    <option value="">-- Нет (только HTTP) --</option>
+                    <!-- Опции будут загружены динамически -->
+                </select>
+
+                <div></div> <!-- Пустая ячейка для выравнивания кнопки -->
+                <button type="submit">Применить и перезагрузить Nginx</button>
+            </form>
         </div>
     </div>
 </div>
@@ -667,6 +690,9 @@
             }
         });
 
+        const deployerSettingsForm = document.getElementById('deployer-settings-form');
+        const deployerSslSelect = document.getElementById('deployer-ssl-cert-select');
+
         const appList = document.getElementById('app-list');
         const loader = document.getElementById('loader');
         const deployForm = document.getElementById('deploy-form');
@@ -682,6 +708,95 @@
         const cancelSettingsBtn = document.getElementById('cancel-settings-btn');
         const settingsModalTitle = document.getElementById('settings-modal-title');
         const settingsError = document.getElementById('settings-error');
+
+
+        // Заполняем выпадающий список сертификатов
+        async function populateDeployerSslDropdown() {
+            // Эта функция похожа на populateSSLDropdowns, но для другого селекта
+            try {
+                const response = await authedFetch('/api/ssl/certificates');
+                if (!response.ok) return;
+                const certs = await response.json();
+
+                deployerSslSelect.innerHTML = '<option value="">-- Нет (только HTTP) --</option>';
+                certs.forEach(cert => {
+                    deployerSslSelect.innerHTML += `<option value="${cert.name}">${cert.name}</option>`;
+                });
+            } catch (error) {
+                console.error("Failed to populate Deployer SSL dropdown:", error);
+            }
+        }
+
+        async function loadDeployerSettings() {
+            try {
+                const response = await authedFetch('/api/deployer/settings');
+                // Если конфига еще нет, сервер вернет 404, это нормально
+                if (!response.ok) return;
+
+                const settings = await response.json();
+
+                const domainInput = document.getElementById('deployer-domain');
+                const sslSelect = document.getElementById('deployer-ssl-cert-select');
+
+                if (settings.domain) {
+                    domainInput.value = settings.domain;
+                } else {
+                    domainInput.value = '';
+                }
+
+                // Важно: эта функция должна вызываться ПОСЛЕ того, как список сертификатов уже загружен
+                if (settings.ssl_certificate_name) {
+                    sslSelect.value = settings.ssl_certificate_name;
+                } else {
+                    sslSelect.value = '';
+                }
+            } catch (error) {
+                console.error("Failed to load Deployer settings:", error);
+                showToast('Не удалось загрузить текущие настройки Deployer.', 'warning');
+            }
+        }
+
+        deployerSettingsForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const domain = document.getElementById('deployer-domain').value.trim() || null;
+            const ssl_certificate_name = deployerSslSelect.value || null;
+
+            if (ssl_certificate_name && !domain) {
+                showToast('Нельзя выбрать SSL сертификат без указания домена.', 'error');
+                return;
+            }
+
+            if (!(await customConfirm('Это действие перезапишет основной конфиг Nginx для Deployer и перезагрузит его. Продолжить?', 'Подтверждение'))) {
+                return;
+            }
+
+            const button = deployerSettingsForm.querySelector('button');
+            button.disabled = true;
+            button.textContent = 'Применение...';
+
+            try {
+                const response = await authedFetch('/api/deployer/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ domain, ssl_certificate_name })
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.detail);
+
+                showToast(result.message, 'success');
+
+                if (domain) {
+                    showToast(`Теперь панель должна быть доступна по адресу http${ssl_certificate_name ? 's' : ''}://${domain}`, 'info', 7000);
+                }
+
+            } catch (error) {
+                showToast(`Ошибка: ${error.message}`, 'error');
+            } finally {
+                button.disabled = false;
+                button.textContent = 'Применить и перезагрузить Nginx';
+            }
+        });
 
         function closeSettingsModal() {
             settingsModal.classList.add('hidden');
@@ -1345,6 +1460,8 @@
         await fetchApps();
         await populateNginxConfigSelector(); // Загружаем список конфигов Nginx
         await populateSSLCertList();
+        await populateDeployerSslDropdown();
+        await loadDeployerSettings();
 
         document.body.classList.add('loaded'); // Показываем body после загрузки
     });
