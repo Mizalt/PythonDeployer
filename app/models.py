@@ -17,6 +17,7 @@ class App(BaseModel):
     nginx_proxy_target: Optional[str] = Field(None, description="Цель для Nginx (подпуть или домен)")
     env_vars: Optional[Dict[str, str]] = Field(default_factory=dict, description="Переменные окружения")
     ssl_certificate_name: Optional[str] = Field(None, description="Имя SSL сертификата для Nginx")  # НОВОЕ ПОЛЕ
+    parent_domain: Optional[str] = Field(None, description="Родительский домен для приложений с путем")
 
 
 class AppCreate(BaseModel):

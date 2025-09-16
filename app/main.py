@@ -545,30 +545,47 @@ def _redeploy_from_zip(app_info: App, zip_path: Path):
 
 
 # --- НОВАЯ HELPER-ФУНКЦИЯ для управления конфигом Nginx ---
-def _update_nginx_config_for_app(app_name: str, nginx_proxy_target: Optional[str], port: int,
-                                 ssl_certificate_name: Optional[str]):
+def _update_nginx_config_for_app(
+        app_name: str,
+        nginx_proxy_target: Optional[str],
+        port: int,
+        ssl_certificate_name: Optional[str],
+        parent_domain: Optional[str] = None
+):
     """
-    Создает, обновляет или удаляет конфиг Nginx для приложения.
-    Правильно обрабатывает все комбинации: путь/домен, с SSL/без SSL.
+    Создает/обновляет конфиг Nginx.
+    - Для доменов: создает файл в nginx-sites с include на свою папку в nginx-locations.
+    - Для путей: требует parent_domain и создает файл в папке nginx-locations/parent_domain/.
     """
+    # Полная очистка старых конфигов
     site_conf_path = NGINX_SITES_DIR / f"{app_name}.conf"
-    location_conf_path = NGINX_LOCATIONS_DIR / f"{app_name}.conf"
-
-    # Всегда удаляем оба файла, чтобы избежать конфликтов при смене типа (домен -> путь)
     if site_conf_path.exists(): site_conf_path.unlink()
-    if location_conf_path.exists(): location_conf_path.unlink()
+
+    # Для путей нужно найти и удалить старый файл в его старой родительской папке.
+    # Это более сложная логика, пока что просто удаляем по новому parent_domain.
+    if parent_domain and nginx_proxy_target and nginx_proxy_target.startswith('/'):
+        old_location_folder = NGINX_LOCATIONS_DIR / parent_domain
+        old_location_conf = old_location_folder / f"{app_name}.conf"
+        if old_location_conf.exists(): old_location_conf.unlink()
 
     if not nginx_proxy_target:
-        return  # Цель не указана, очистка выполнена, выходим.
+        return
 
     is_path_target = nginx_proxy_target.startswith('/')
 
     if is_path_target:
-        # --- ГЕНЕРИРУЕМ ФАЙЛ С LOCATION-БЛОКОМ (SSL здесь не применяется) ---
-        path_prefix = nginx_proxy_target.rstrip('/')
-        if not path_prefix.endswith('/'):
-            path_prefix += '/'
+        if not parent_domain:
+            raise ValueError("Parent domain is required for path-based routing.")
 
+        location_folder = NGINX_LOCATIONS_DIR / parent_domain
+        location_folder.mkdir(exist_ok=True)
+        location_conf_path = location_folder / f"{app_name}.conf"
+
+        path_prefix = nginx_proxy_target.rstrip('/')
+        if not path_prefix.endswith('/'): path_prefix += '/'
+
+        # Важно: location контент теперь не содержит "location {}", а только сам location
+        # так как он будет "вставлен" в server блок.
         location_content = f"""
 # Config for {app_name} at location {path_prefix}
 location {path_prefix} {{
@@ -582,10 +599,10 @@ location {path_prefix} {{
         location_conf_path.write_text(location_content, encoding="utf-8")
 
     else:  # is_domain_target
-        # --- ГЕНЕРИРУЕМ ФАЙЛ С SERVER-БЛОКОМ (с умной обработкой SSL) ---
         server_name = nginx_proxy_target
+        location_folder_for_domain = NGINX_LOCATIONS_DIR / server_name
+        location_folder_for_domain.mkdir(exist_ok=True)
 
-        # Общий блок проксирования, который будет использоваться в обоих случаях
         proxy_block = f"""
     location / {{
         proxy_pass http://localhost:{port};
@@ -595,7 +612,6 @@ location {path_prefix} {{
         proxy_set_header X-Forwarded-Proto $scheme;
     }}"""
 
-        # Проверяем, есть ли валидный SSL сертификат
         use_ssl = False
         ssl_config_block = ""
         if ssl_certificate_name:
@@ -608,14 +624,13 @@ location {path_prefix} {{
     listen 443 ssl;
     ssl_certificate {cert_path.as_posix()};
     ssl_certificate_key {key_path.as_posix()};
-    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_protocols TLSv1.2 TLSvv1.3;
 """
 
-        # Собираем финальный конфиг
+        include_line = f"    include {location_folder_for_domain.as_posix()}/*.conf;"
+
         final_config = ""
         if use_ssl:
-            # --- Сценарий с SSL ---
-            # Блок для HTTP, который делает редирект на HTTPS
             final_config += f"""
 server {{
     listen 80;
@@ -624,26 +639,23 @@ server {{
         return 301 https://$host$request_uri;
     }}
 }}
-"""
-            # Блок для HTTPS, который проксирует на приложение
-            final_config += f"""
+
 server {{
     {ssl_config_block}
     server_name {server_name};
     {proxy_block}
+    {include_line}
 }}
 """
         else:
-            # --- Сценарий БЕЗ SSL ---
-            # Только один блок для HTTP, который проксирует на приложение
             final_config += f"""
 server {{
     listen 80;
     server_name {server_name};
     {proxy_block}
+    {include_line}
 }}
 """
-
         site_conf_path.write_text(final_config, encoding="utf-8")
 
 # --- Эндпоинты API для управления приложениями ---
@@ -1440,3 +1452,22 @@ async def get_deployer_settings(current_user: Annotated[User, Depends(get_curren
             # В случае ошибки просто вернем пустые значения
 
     return DeployerSettings(domain=domain, ssl_certificate_name=ssl_cert_name)
+
+@app.get("/api/nginx/domains", response_model=List[str])
+async def list_nginx_domains(current_user: Annotated[User, Depends(get_current_active_user)]):
+    """Возвращает список доменов из файлов в nginx-sites."""
+    if not NGINX_SITES_DIR.exists():
+        return []
+    domains = []
+    for conf_file in NGINX_SITES_DIR.glob("*.conf"):
+        # Пропускаем конфиг самого деплоера
+        if conf_file.name == "deployer-main.conf":
+            continue
+        content = conf_file.read_text(encoding="utf-8")
+        match = re.search(r"server_name\s+([^;]+);", content)
+        if match:
+            # Берем первое имя, если их несколько
+            domain = match.group(1).strip().split()[0]
+            if domain != "_":
+                domains.append(domain)
+    return sorted(list(set(domains)))

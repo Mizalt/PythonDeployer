@@ -431,6 +431,14 @@
                         </span>
                     </button>
                 </div>
+                <div id="deploy-parent-domain-group" class="hidden" style="grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; margin-top: -0.5rem;">
+                    <label for="deploy-parent-domain" style="color: #0056b3;">└─ Родительский домен:</label>
+                    <select id="deploy-parent-domain" name="parent_domain" style="border-color: #007bff;">
+                        <!-- Опции будут загружены динамически -->
+                        <option value="">-- Выберите домен --</option>
+                    </select>
+                </div>
+
                 <label for="deploy-ssl-cert-select">SSL Сертификат:</label>
                 <select id="deploy-ssl-cert-select" name="ssl_certificate_name">
                     <option value="">-- Нет (только HTTP) --</option>

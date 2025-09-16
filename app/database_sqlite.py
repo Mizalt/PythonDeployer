@@ -42,7 +42,12 @@ def init_db():
             conn.commit()
             print("INFO: Column 'ssl_certificate_name' added to 'apps' table.")
         except sqlite3.OperationalError: pass # Колонка уже существует
-
+        try:  # <-- ДОБАВЬТЕ ЭТОТ БЛОК
+            cursor.execute("ALTER TABLE apps ADD COLUMN parent_domain TEXT")
+            conn.commit()
+            print("INFO: Column 'parent_domain' added to 'apps' table.")
+        except sqlite3.OperationalError:
+            pass  # Колонка уже существует
 
 def row_to_app_model(row: sqlite3.Row) -> App:
     """Преобразует строку из БД в Pydantic модель App."""
@@ -80,11 +85,11 @@ def add_or_update_app(app: App):
         env_vars_json = json.dumps(app.env_vars) if app.env_vars else None
         data = (
             app.name, app.port, app.app_path, app.start_script, app.log_path, app.status,
-            app.python_executable, app.nginx_proxy_target, env_vars_json, app.ssl_certificate_name
+            app.python_executable, app.nginx_proxy_target, env_vars_json, app.ssl_certificate_name, app.parent_domain
         )
         cursor.execute('''
-            INSERT INTO apps (name, port, app_path, start_script, log_path, status, python_executable, nginx_proxy_target, env_vars, ssl_certificate_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO apps (name, port, app_path, start_script, log_path, status, python_executable, nginx_proxy_target, env_vars, ssl_certificate_name, parent_domain)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET
                 port=excluded.port,
                 app_path=excluded.app_path,
@@ -94,7 +99,8 @@ def add_or_update_app(app: App):
                 python_executable=excluded.python_executable,
                 nginx_proxy_target=excluded.nginx_proxy_target,
                 env_vars=excluded.env_vars,
-                ssl_certificate_name=excluded.ssl_certificate_name
+                ssl_certificate_name=excluded.ssl_certificate_name,
+                parent_domain=excluded.parent_domain
         ''', data)
         conn.commit()
 
