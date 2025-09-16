@@ -416,34 +416,40 @@
                 <label for="port">Порт приложения:</label>
                 <input type="number" id="port" name="port" placeholder="Авто (например, 8001)">
 
-                <label for="deploy-path-domain">Путь или Домен (Nginx):</label>
-                <div class="input-with-tooltip">
-                    <input type="text" id="deploy-path-domain" name="nginx_proxy_target" placeholder="Пример: /api/v1 или app.example.com">
-                    <button type="button" class="info-button" id="deploy-path-domain-info-button">
-                        <i class="fas fa-info-circle"></i>
-                        <span class="tooltip-text">
-                            Укажите:
-                            <ul>
-                                <li><strong>/мой-путь</strong>: Для доступа через подпуть на основном домене (например, <code>18zim.ru/мой-путь</code>).</li>
-                                <li><strong>sub.domain.com</strong>: Для доступа через поддомен (требуется настройка DNS).</li>
-                                <li>Оставьте пустым, если не нужен доступ через Nginx.</li>
-                            </ul>
-                        </span>
-                    </button>
-                </div>
-                <div id="deploy-parent-domain-group" class="hidden" style="grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; margin-top: -0.5rem;">
-                    <label for="deploy-parent-domain" style="color: #0056b3;">└─ Родительский домен:</label>
-                    <select id="deploy-parent-domain" name="parent_domain" style="border-color: #007bff;">
+                <label for="deploy-nginx-enable">Веб-доступ (Nginx):</label>
+                <input type="checkbox" id="deploy-nginx-enable" name="nginx_enable" checked style="justify-self: start; align-self: center;">
+
+                <!-- Оборачиваем все Nginx-опции в один div -->
+                <div id="deploy-nginx-options" style="grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; gap: inherit;">
+                    <label for="deploy-path-domain">Путь или Домен (Nginx):</label>
+                    <div class="input-with-tooltip">
+                        <input type="text" id="deploy-path-domain" name="nginx_proxy_target" placeholder="Пример: /api/v1 или app.example.com">
+                        <button type="button" class="info-button" id="deploy-path-domain-info-button">
+                            <i class="fas fa-info-circle"></i>
+                            <span class="tooltip-text">
+                                Укажите:
+                                <ul>
+                                    <li><strong>/мой-путь</strong>: Для доступа через подпуть на основном домене (например, <code>18zim.ru/мой-путь</code>).</li>
+                                    <li><strong>sub.domain.com</strong>: Для доступа через поддомен (требуется настройка DNS).</li>
+                                    <li>Оставьте пустым, если не нужен доступ через Nginx.</li>
+                                </ul>
+                            </span>
+                        </button>
+                    </div>
+                    <div id="deploy-parent-domain-group" class="hidden" style="grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; margin-top: -0.5rem;">
+                        <label for="deploy-parent-domain" style="color: #0056b3;">└─ Родительский домен:</label>
+                        <select id="deploy-parent-domain" name="parent_domain" style="border-color: #007bff;">
+                            <!-- Опции будут загружены динамически -->
+                            <option value="">-- Выберите домен --</option>
+                        </select>
+                    </div>
+
+                    <label for="deploy-ssl-cert-select">SSL Сертификат:</label>
+                    <select id="deploy-ssl-cert-select" name="ssl_certificate_name">
+                        <option value="">-- Нет (только HTTP) --</option>
                         <!-- Опции будут загружены динамически -->
-                        <option value="">-- Выберите домен --</option>
                     </select>
                 </div>
-
-                <label for="deploy-ssl-cert-select">SSL Сертификат:</label>
-                <select id="deploy-ssl-cert-select" name="ssl_certificate_name">
-                    <option value="">-- Нет (только HTTP) --</option>
-                    <!-- Опции будут загружены динамически -->
-                </select>
                 <label for="zip_file">ZIP-архив:</label>
                 <input type="file" id="zip_file" name="zip_file" required accept=".zip">
                 <button type="submit">Развернуть</button>
@@ -558,36 +564,40 @@
             <label for="settings-start-script">Скрипт запуска:</label>
             <input type="text" id="settings-start-script" required>
 
-            <label for="settings-path-domain">Путь или Домен (Nginx):</label>
-            <div class="input-with-tooltip">
-                <input type="text" id="settings-path-domain" placeholder="Пример: /api/v1 или app.example.com">
-                <button type="button" class="info-button" id="settings-path-domain-info-button">
-                    <i class="fas fa-info-circle"></i>
-                    <span class="tooltip-text">
-                        Укажите:
-                        <ul>
-                            <li><strong>/мой-путь</strong>: Для доступа через подпуть на основном домене (например, <code>18zim.ru/мой-путь</code>).</li>
-                            <li><strong>sub.domain.com</strong>: Для доступа через поддомен (требуется настройка DNS).</li>
-                            <li>Оставьте пустым, если не нужен доступ через Nginx.</li>
-                        </ul>
-                    </span>
-                </button>
-            </div>
+            <label for="settings-nginx-enable">Веб-доступ (Nginx):</label>
+            <input type="checkbox" id="settings-nginx-enable" name="nginx_enable" style="justify-self: start; align-self: center;">
 
-            <div id="settings-parent-domain-group" class="hidden" style="grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; margin-top: -0.5rem;">
-                <label for="settings-parent-domain" style="color: #0056b3;">└─ Родительский домен:</label>
-                <select id="settings-parent-domain" name="parent_domain" style="border-color: #007bff;">
-                    <!-- Опции будут загружены динамически -->
-                    <option value="">-- Выберите домен --</option>
+            <div id="settings-nginx-options" style="grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; gap: inherit;">
+                <label for="settings-path-domain">Путь или Домен (Nginx):</label>
+                <div class="input-with-tooltip">
+                    <input type="text" id="settings-path-domain" placeholder="Пример: /api/v1 или app.example.com">
+                    <button type="button" class="info-button" id="settings-path-domain-info-button">
+                        <i class="fas fa-info-circle"></i>
+                        <span class="tooltip-text">
+                            Укажите:
+                            <ul>
+                                <li><strong>/мой-путь</strong>: Для доступа через подпуть на основном домене (например, <code>18zim.ru/мой-путь</code>).</li>
+                                <li><strong>sub.domain.com</strong>: Для доступа через поддомен (требуется настройка DNS).</li>
+                                <li>Оставьте пустым, если не нужен доступ через Nginx.</li>
+                            </ul>
+                        </span>
+                    </button>
+                </div>
+
+                <div id="settings-parent-domain-group" class="hidden" style="grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; margin-top: -0.5rem;">
+                    <label for="settings-parent-domain" style="color: #0056b3;">└─ Родительский домен:</label>
+                    <select id="settings-parent-domain" name="parent_domain" style="border-color: #007bff;">
+                        <!-- Опции будут загружены динамически -->
+                        <option value="">-- Выберите домен --</option>
+                    </select>
+                </div>
+
+                <label for="settings-ssl-cert-select">SSL Сертификат:</label>
+                <select id="settings-ssl-cert-select" name="ssl_certificate_name">
+                     <option value="">-- Нет (только HTTP) --</option>
+                     <!-- Опции будут загружены динамически -->
                 </select>
             </div>
-
-            <!-- НОВОЕ ПОЛЕ: ВЫБОР SSL СЕРТИФИКАТА В НАСТРОЙКАХ -->
-            <label for="settings-ssl-cert-select">SSL Сертификат:</label>
-            <select id="settings-ssl-cert-select" name="ssl_certificate_name">
-                 <option value="">-- Нет (только HTTP) --</option>
-                 <!-- Опции будут загружены динамически -->
-            </select>
 
             <label for="settings-env-vars" style="align-self: start; padding-top: 0.7rem;">Переменные окружения:</label>
             <textarea id="settings-env-vars" rows="6" placeholder="KEY1=VALUE1&#10;KEY2=VALUE2"></textarea>
@@ -734,6 +744,39 @@
         const settingsPathDomainInput = document.getElementById('settings-path-domain');
         const settingsParentDomainGroup = document.getElementById('settings-parent-domain-group');
         const settingsParentDomainSelect = document.getElementById('settings-parent-domain');
+
+        // --- Управление UI для формы развертывания ---
+        const deployNginxEnableCheckbox = document.getElementById('deploy-nginx-enable');
+        const deployNginxOptions = document.getElementById('deploy-nginx-options');
+
+        deployNginxEnableCheckbox.addEventListener('change', () => {
+            deployNginxOptions.style.display = deployNginxEnableCheckbox.checked ? 'grid' : 'none';
+            if (!deployNginxEnableCheckbox.checked) {
+                // Очищаем поля, если Nginx выключен
+                document.getElementById('deploy-path-domain').value = '';
+                document.getElementById('deploy-ssl-cert-select').value = '';
+                document.getElementById('deploy-parent-domain').value = '';
+                // Скрываем поле родительского домена
+                document.getElementById('deploy-parent-domain-group').classList.add('hidden');
+            }
+        });
+
+        // --- Управление UI для модального окна настроек ---
+        const settingsNginxEnableCheckbox = document.getElementById('settings-nginx-enable');
+        const settingsNginxOptions = document.getElementById('settings-nginx-options');
+
+        settingsNginxEnableCheckbox.addEventListener('change', () => {
+            settingsNginxOptions.style.display = settingsNginxEnableCheckbox.checked ? 'grid' : 'none';
+             if (!settingsNginxEnableCheckbox.checked) {
+                // Очищаем поля, если Nginx выключен
+                document.getElementById('settings-path-domain').value = '';
+                document.getElementById('settings-ssl-cert-select').value = '';
+                document.getElementById('settings-parent-domain').value = '';
+                // Скрываем поле родительского домена
+                document.getElementById('settings-parent-domain-group').classList.add('hidden');
+            }
+        });
+
 
         // --- 2. Новая функция для загрузки доменов в dropdown'ы ---
         async function populateParentDomainDropdowns() {
@@ -1066,34 +1109,42 @@
             e.preventDefault();
             const formData = new FormData(deployForm);
 
-            const nginxTarget = formData.get('nginx_proxy_target').trim();
+            const nginxEnabled = document.getElementById('deploy-nginx-enable').checked;
 
-            // Если это путь, нам НУЖНО добавить parent_domain в formData
-            if (nginxTarget && nginxTarget.startsWith('/')) {
-                const parentDomainSelect = document.getElementById('deploy-parent-domain');
-                const parentDomain = parentDomainSelect.value;
+            if (nginxEnabled) {
+                const nginxTarget = formData.get('nginx_proxy_target').trim();
+                // Если это путь, нам НУЖНО добавить parent_domain в formData
+                if (nginxTarget && nginxTarget.startsWith('/')) {
+                    const parentDomainSelect = document.getElementById('deploy-parent-domain');
+                    const parentDomain = parentDomainSelect.value;
 
-                if (!parentDomain) {
-                    showToast('Для маршрутизации по пути необходимо выбрать родительский домен!', 'error');
-                    return; // Прерываем отправку формы
+                    if (!parentDomain) {
+                        showToast('Для маршрутизации по пути необходимо выбрать родительский домен!', 'error');
+                        return; // Прерываем отправку формы
+                    }
+                    formData.append('parent_domain', parentDomain);
                 }
-                formData.append('parent_domain', parentDomain);
-            }
 
-            const sslCertName = document.getElementById('deploy-ssl-cert-select').value;
-            if (sslCertName) {
-                formData.set('ssl_certificate_name', sslCertName);
+                const sslCertName = document.getElementById('deploy-ssl-cert-select').value;
+                if (sslCertName) {
+                    formData.set('ssl_certificate_name', sslCertName);
+                } else {
+                    formData.delete('ssl_certificate_name');
+                }
+
+                const deployPathDomainValue = document.getElementById('deploy-path-domain').value.trim();
+                if (deployPathDomainValue) {
+                    formData.set('nginx_proxy_target', deployPathDomainValue);
+                } else {
+                    formData.delete('nginx_proxy_target'); // Убедиться, что пустое значение не отправляется
+                }
             } else {
+                // Если Nginx выключен, удаляем все связанные поля из данных для отправки
+                formData.delete('nginx_proxy_target');
                 formData.delete('ssl_certificate_name');
+                formData.delete('parent_domain');
             }
 
-            // Обработка поля Nginx Path/Domain
-            const deployPathDomainValue = document.getElementById('deploy-path-domain').value.trim();
-            if (deployPathDomainValue) {
-                formData.set('nginx_proxy_target', deployPathDomainValue);
-            } else {
-                formData.delete('nginx_proxy_target'); // Убедиться, что пустое значение не отправляется
-            }
 
             if (!formData.get('port')) formData.delete('port');
 
@@ -1154,23 +1205,33 @@
             document.getElementById('settings-port').value = appData.port;
             document.getElementById('settings-start-script').value = appData.start_script;
 
-            const pathDomainInput = document.getElementById('settings-path-domain');
-            pathDomainInput.value = appData.nginx_proxy_target || '';
 
-            // --- НАЧАЛО ИЗМЕНЕНИЙ ---
+            const pathDomainInput = document.getElementById('settings-path-domain');
+            const nginxEnabledCheckbox = document.getElementById('settings-nginx-enable');
+            const nginxOptionsDiv = document.getElementById('settings-nginx-options');
+
+            if (appData.nginx_proxy_target) {
+                nginxEnabledCheckbox.checked = true;
+                nginxOptionsDiv.style.display = 'grid';
+                pathDomainInput.value = appData.nginx_proxy_target;
+            } else {
+                nginxEnabledCheckbox.checked = false;
+                nginxOptionsDiv.style.display = 'none';
+                pathDomainInput.value = '';
+            }
+
             // Сразу после заполнения поля, проверяем его значение и показываем/скрываем dropdown
             const parentDomainGroup = document.getElementById('settings-parent-domain-group');
             const parentDomainSelect = document.getElementById('settings-parent-domain');
 
+            // ЭТА ЧАСТЬ КОДА ОТСУТСТВУЕТ ИЛИ НЕПОЛНАЯ
             if (pathDomainInput.value.startsWith('/')) {
                 parentDomainGroup.classList.remove('hidden');
-                // Также устанавливаем сохраненное значение родительского домена
                 parentDomainSelect.value = appData.parent_domain || '';
             } else {
                 parentDomainGroup.classList.add('hidden');
                 parentDomainSelect.value = '';
             }
-            // --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
             document.getElementById('settings-ssl-cert-select').value = appData.ssl_certificate_name || '';
             const envVarsString = Object.entries(appData.env_vars || {}).map(([k, v]) => `${k}=${v}`).join('\n');
@@ -1188,6 +1249,11 @@
             saveBtn.textContent = 'Сохранение...';
             settingsError.textContent = '';
 
+            // --- НАЧАЛО ИЗМЕНЕНИЙ ---
+
+            // Показываем упреждающее сообщение
+            showToast('Сохраняем настройки... Приложение будет перезапущено для их применения.', 'info', 5000);
+
             const envVarsText = document.getElementById('settings-env-vars').value.trim();
             const envVars = {};
             if (envVarsText) {
@@ -1204,11 +1270,18 @@
             const payload = {
                 port: parseInt(document.getElementById('settings-port').value, 10),
                 start_script: document.getElementById('settings-start-script').value,
-                nginx_proxy_target: document.getElementById('settings-path-domain').value || null,
-                ssl_certificate_name: document.getElementById('settings-ssl-cert-select').value || null,
-                parent_domain: document.getElementById('settings-parent-domain').value || null,
+                nginx_proxy_target: null,
+                ssl_certificate_name: null,
+                parent_domain: null,
                 env_vars: envVars
             };
+
+            const nginxEnabled = document.getElementById('settings-nginx-enable').checked;
+            if (nginxEnabled) {
+                payload.nginx_proxy_target = document.getElementById('settings-path-domain').value.trim() || null;
+                payload.ssl_certificate_name = document.getElementById('settings-ssl-cert-select').value || null;
+                payload.parent_domain = document.getElementById('settings-parent-domain').value.trim() || null;
+            }
 
             try {
                 const response = await authedFetch(`/api/apps/${appName}/config`, {
@@ -1216,19 +1289,40 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
-                const result = await response.json();
-                if (!response.ok) throw new Error(result.detail || 'Server error');
 
-                showToast('Настройки успешно сохранены. Приложение перезапускается для применения изменений.', 'success', 5000);
+                // Если сервер УСПЕЛ ответить до того, как соединение разорвалось
+                const result = await response.json();
+                if (!response.ok) {
+                    throw new Error(result.detail || 'Server error');
+                }
+
+                // Это маловероятный, но возможный сценарий успеха
+                showToast(result.message || 'Настройки успешно применены.', 'success');
                 closeSettingsModal();
                 await fetchApps();
+
             } catch (error) {
-                settingsError.textContent = `Ошибка: ${error.message}`;
-                showToast(`Ошибка сохранения настроек: ${error.message}`, 'error');
+                // ПЕРЕХВАТЫВАЕМ ОЖИДАЕМУЮ ОШИБКУ
+                if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
+                    // Это наш случай! Сервер перезапустился, соединение оборвалось.
+                    // Мы считаем это УСПЕХОМ.
+                    showToast('Настройки сохранены, приложение перезапускается. Обновляю список...', 'success');
+                    closeSettingsModal();
+                    // Добавляем небольшую задержку перед обновлением списка,
+                    // чтобы дать приложению время запуститься.
+                    setTimeout(() => {
+                        fetchApps();
+                    }, 2500); // 2.5 секунды
+                } else {
+                    // А вот это уже настоящая ошибка (например, ошибка валидации 400)
+                    settingsError.textContent = `Ошибка: ${error.message}`;
+                    showToast(`Ошибка сохранения настроек: ${error.message}`, 'error');
+                }
             } finally {
                 saveBtn.disabled = false;
                 saveBtn.textContent = 'Сохранить';
             }
+            // --- КОНЕЦ ИЗМЕНЕНИЙ ---
         });
 
         async function handleUpdate(appName) {
@@ -1356,7 +1450,6 @@
             button.disabled = true; button.textContent = 'Перезагрузка...';
 
             try {
-                // ИЗМЕНЕНИЕ ЗДЕСЬ
                 // Мы отправляем запрос, но не ждем полноценного ответа.
                 // fetch сам по себе отправит запрос, а then/catch сработают
                 // в зависимости от того, успеет ли сервер ответить.
