@@ -325,10 +325,26 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
     loop = asyncio.get_running_loop()
 
     # Даем WebSocket-клиенту время на подключение
-    # Если клиент не успел подключиться, то сообщения отправляться не будут
     await asyncio.sleep(0.5)
 
     try:
+        # --- НОВЫЙ БЛОК: ПРОВЕРКА И УДАЛЕНИЕ "МЕРТВОЙ" СЛУЖБЫ ---
+        await manager.send_message(f"=== Проверка на наличие существующей службы '{name}'... ===", task_id)
+
+        # Вспомогательная функция для запуска синхронной команды в потоке
+        async def run_sync_in_thread(command, cwd=None):
+            return await loop.run_in_executor(None, functools.partial(run_command_sync, command, cwd=cwd))
+
+        # Пробуем остановить и удалить, игнорируя ошибки (если службы нет, команда просто вернет ошибку)
+        await run_sync_in_thread(f'"{NSSM_PATH}" stop "{service_name}"')
+        await asyncio.sleep(1)  # Небольшая пауза
+        code, out, err = await run_sync_in_thread(f'"{NSSM_PATH}" remove "{service_name}" confirm')
+        if code == 0:
+            await manager.send_message(f"[INFO] Обнаружена и удалена существующая служба '{name}'.", task_id)
+        else:
+            await manager.send_message("[INFO] Существующая служба не найдена, продолжаем.", task_id)
+        # --- КОНЕЦ НОВОГО БЛОКА ---
+
         await asyncio.sleep(1.5)
         await manager.send_message(f"=== Начало развертывания приложения '{name}' (ID задачи: {task_id}) ===", task_id)
 
