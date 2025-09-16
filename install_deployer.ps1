@@ -413,8 +413,8 @@ try {
 # --- 9. Configure and Start Nginx Service ---
 Write-Host "Configuring and starting Nginx service..." -ForegroundColor Cyan
 
-# Create Nginx config for Deployer UI (e.g., C:\deployer-data\nginx-sites\deployer.conf)
-$DeployerNginxConfFile = Join-Path $NginxSitesDir "deployer.conf"
+# Create Nginx config for Deployer UI (e.g., C:\deployer-data\nginx-sites\deployer-main.conf)
+$DeployerNginxConfFile = Join-Path $NginxSitesDir "deployer-main.conf"
 $NginxDeployerConfigContent = @"
 server {
     listen 80;
@@ -436,7 +436,7 @@ server {
 "@
 
 # Note: The main Nginx config (nginx.conf) is being overwritten by interactive prompt in block 4.
-# This config file (deployer.conf) will be included by the main config.
+# This config file (deployer-main.conf) will be included by the main config.
 Write-Host "Creating Nginx config file for Deployer UI at '$DeployerNginxConfFile'..." -ForegroundColor Yellow
 Set-Content -Path $DeployerNginxConfFile -Value $NginxDeployerConfigContent -Force
 Write-Host "Nginx config for Deployer UI created." -ForegroundColor Green
