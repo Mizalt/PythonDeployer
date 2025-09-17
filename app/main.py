@@ -63,28 +63,39 @@ client = httpx.AsyncClient()
 # --- Управление WebSocket-соединениями для логов деплоя ---
 
 class ConnectionManager:
-    """Управляет активными WebSocket-соединениями по уникальному ID задачи."""
+    """Управляет активными WebSocket-соединениями и событиями готовности."""
 
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
+        # НОВИНКА: Словарь для ожидания подключения клиента
+        self.client_ready_events: Dict[str, asyncio.Event] = {}
+
+    def register_task(self, task_id: str) -> asyncio.Event:
+        """Регистрирует новую задачу и создает для нее событие ожидания."""
+        event = asyncio.Event()
+        self.client_ready_events[task_id] = event
+        return event
 
     async def connect(self, websocket: WebSocket, task_id: str):
+        """Принимает соединение и активирует событие готовности."""
         await websocket.accept()
         self.active_connections[task_id] = websocket
+        # Если для этой задачи есть ожидающее событие, активируем его
+        if task_id in self.client_ready_events:
+            self.client_ready_events[task_id].set()
 
     def disconnect(self, task_id: str):
+        """Отключает клиента и очищает связанные с ним данные."""
         if task_id in self.active_connections:
             del self.active_connections[task_id]
+        if task_id in self.client_ready_events:
+            del self.client_ready_events[task_id]
 
     async def send_message(self, message: str, task_id: str):
         """Отправляет сообщение клиенту, подключенному к этой задаче."""
         if task_id in self.active_connections:
-            # Отправка сообщений в WebSocket может вызвать WebSocketDisconnect
-            # если клиент уже отключился. Обработаем это.
             try:
-                print(f"DEBUG: Attempting to send message to {task_id}: {message[:50]}...")  # Отладочный вывод
                 await self.active_connections[task_id].send_text(message)
-                print(f"DEBUG: Message sent to {task_id}.")  # Отладочный вывод
             except RuntimeError as e:
                 print(f"Failed to send message to task {task_id}: {e}")
                 self.disconnect(task_id)
@@ -325,7 +336,14 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
     loop = asyncio.get_running_loop()
 
     # Даем WebSocket-клиенту время на подключение
-    await asyncio.sleep(0.5)
+    ready_event = manager.register_task(task_id)
+    try:
+        # Ждем подключения клиента не более 10 секунд
+        await asyncio.wait_for(ready_event.wait(), timeout=10.0)
+    except asyncio.TimeoutError:
+        print(f"ERROR: WebSocket client for task {task_id} did not connect in time.")
+        manager.disconnect(task_id)  # Очистка
+        return  # Прерываем деплой
 
     try:
         # --- НОВЫЙ БЛОК: ПРОВЕРКА И УДАЛЕНИЕ "МЕРТВОЙ" СЛУЖБЫ ---
@@ -464,6 +482,7 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
 
         # Сохранение в БД
         new_app = App(
+            app_type="python_app",  # <-- РЕКОМЕНДАЦИЯ: Явно указываем тип приложения
             name=name, port=app_data.port, app_path=str(app_path), log_path=str(log_file_path),
             start_script=final_start_script,
             status=final_status, python_executable=python_executable, nginx_proxy_target=app_data.nginx_proxy_target,
@@ -480,7 +499,14 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
         # Диагностический блок: читаем логи приложения для отладки
         if log_file_path.exists() and log_file_path.stat().st_size > 0:
             await manager.send_message("\n--- Чтение лог-файла приложения для диагностики: ---", task_id)
-            await asyncio.sleep(0.5)
+            ready_event = manager.register_task(task_id)
+            try:
+                # Ждем подключения клиента не более 10 секунд
+                await asyncio.wait_for(ready_event.wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                print(f"ERROR: WebSocket client for task {task_id} did not connect in time.")
+                manager.disconnect(task_id)  # Очистка
+                return  # Прерываем деплой
             try:
                 # Читаем последние строки лога (до 2000 символов)
                 with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -519,6 +545,101 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
         manager.disconnect(task_id)
 
 
+async def perform_static_deployment(task_id: str, app_data: AppCreate, zip_file_path: Path):
+    """Асинхронно выполняет процесс деплоя статического сайта с полным логированием."""
+    name = app_data.name
+    app_path = APPS_BASE_DIR / name
+    backup_dir = BACKUPS_DIR / name
+
+    # Мы не можем заранее знать точный путь к конфигу, так как он зависит от домена/пути.
+    # Поэтому будем управлять флагом, а не путем.
+    nginx_config_created = False
+    loop = asyncio.get_running_loop()
+
+    # Даем WebSocket-клиенту время на подключение
+    ready_event = manager.register_task(task_id)
+    try:
+        # Ждем подключения клиента не более 10 секунд
+        await asyncio.wait_for(ready_event.wait(), timeout=10.0)
+    except asyncio.TimeoutError:
+        print(f"ERROR: WebSocket client for task {task_id} did not connect in time.")
+        manager.disconnect(task_id)  # Очистка
+        return  # Прерываем деплой
+
+    try:
+        await manager.send_message(f"=== Начало развертывания статического сайта '{name}' ===", task_id)
+
+        # 1. Подготовка директорий
+        await manager.send_message("[1/3] Подготовка директорий...", task_id)
+        app_path.mkdir(parents=True, exist_ok=True)
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        await manager.send_message(" -> Директории успешно подготовлены.", task_id)
+
+        # 2. Распаковка архива
+        await manager.send_message(f"[2/3] Распаковка архива '{zip_file_path.name}'...", task_id)
+        with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+            await loop.run_in_executor(None, zip_ref.extractall, app_path)
+        await manager.send_message(" -> Архив успешно распакован.", task_id)
+
+        # 3. Настройка Nginx
+        if not app_data.nginx_proxy_target:
+            raise Exception("Для статического сайта обязательно должен быть указан 'Путь или Домен (Nginx)'.")
+
+        await manager.send_message(f"[3/3] Настройка Nginx для '{app_data.nginx_proxy_target}'...", task_id)
+        await loop.run_in_executor(None, _update_nginx_config_for_app, name,
+                                   app_data.nginx_proxy_target,
+                                   None,  # Порт не нужен
+                                   app_data.ssl_certificate_name,
+                                   app_data.parent_domain,
+                                   "static_site")
+        nginx_config_created = True
+        await manager.send_message(" -> Конфигурация Nginx создана. Перезагрузка...", task_id)
+
+        code, out, err = await loop.run_in_executor(None, functools.partial(run_command_sync, NGINX_RELOAD_CMD))
+        if code != 0:
+            await manager.send_message(f" -> [WARNING] Не удалось перезагрузить Nginx: {err or out}", task_id)
+        else:
+            await manager.send_message(" -> Nginx успешно перезагружен.", task_id)
+
+        # Сохранение в БД
+        new_app = App(
+            app_type="static_site",
+            name=name,
+            app_path=str(app_path),
+            status="running",
+            nginx_proxy_target=app_data.nginx_proxy_target,
+            ssl_certificate_name=app_data.ssl_certificate_name,
+            parent_domain=app_data.parent_domain,
+            port=0,
+            start_script=""
+        )
+        add_or_update_app(new_app)
+        await manager.send_message(f"\n=== РАЗВЕРТЫВАНИЕ УСПЕШНО ЗАВЕРШЕНО! ===", task_id)
+
+    except Exception as e:
+        await manager.send_message(f"\n--- !!! ОШИБКА РАЗВЕРТЫВАНИЯ: {e} ---", task_id)
+        await manager.send_message("\nВыполняется откат изменений...", task_id)
+
+        await loop.run_in_executor(None, shutil.rmtree, app_path, True)
+
+        # Умный откат конфига Nginx
+        if nginx_config_created:
+            await manager.send_message("Откат конфигурации Nginx...", task_id)
+            # Вызываем ту же функцию, но с пустыми параметрами, чтобы она удалила конфиги
+            try:
+                await loop.run_in_executor(None, _update_nginx_config_for_app,
+                                           name, None, None, None, app_data.parent_domain, "static_site")
+                await loop.run_in_executor(None, functools.partial(run_command_sync, NGINX_RELOAD_CMD))
+                await manager.send_message(" -> Конфигурация Nginx удалена.", task_id)
+            except Exception as nginx_err:
+                await manager.send_message(f" -> [WARNING] Ошибка при откате конфига Nginx: {nginx_err}", task_id)
+
+        await manager.send_message("Откат завершен.", task_id)
+    finally:
+        await asyncio.sleep(2)
+        await manager.send_message("CLOSE_CONNECTION", task_id)
+        manager.disconnect(task_id)
+
 def _redeploy_from_zip(app_info: App, zip_path: Path):
     """
     (СИНХРОННЫЙ) Вспомогательный helper для обновления/восстановления из ZIP.
@@ -553,9 +674,10 @@ def _redeploy_from_zip(app_info: App, zip_path: Path):
 def _update_nginx_config_for_app(
         app_name: str,
         nginx_proxy_target: Optional[str],
-        port: int,
+        port: Optional[int],
         ssl_certificate_name: Optional[str],
-        parent_domain: Optional[str] = None
+        parent_domain: Optional[str] = None,
+        app_type: str = "python_app"
 ):
     """
     Создает/обновляет конфиг Nginx.
@@ -577,6 +699,7 @@ def _update_nginx_config_for_app(
         return
 
     is_path_target = nginx_proxy_target.startswith('/')
+    app_path = APPS_BASE_DIR / app_name  # Определяем путь к файлам здесь
 
     if is_path_target:
         if not parent_domain:
@@ -587,20 +710,34 @@ def _update_nginx_config_for_app(
         location_conf_path = location_folder / f"{app_name}.conf"
 
         path_prefix = nginx_proxy_target.rstrip('/')
-        if not path_prefix.endswith('/'): path_prefix += '/'
 
-        # Важно: location контент теперь не содержит "location {}", а только сам location
-        # так как он будет "вставлен" в server блок.
-        location_content = f"""
-# Config for {app_name} at location {path_prefix}
-location {path_prefix} {{
-    proxy_pass http://localhost:{port}/;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-}}
-"""
+        # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+        location_content = ""
+        if app_type == "static_site":
+            # --- ИСПОЛЬЗУЕМ БОЛЕЕ НАДЕЖНЫЙ 'root' ВМЕСТО 'alias' ---
+            # root указывает на родительскую папку 'apps', а Nginx сам достраивает путь из URI.
+            apps_root_dir = APPS_BASE_DIR.as_posix()
+
+            location_content = f"""
+            # Config for static site {app_name} at location {path_prefix}
+            location {path_prefix} {{
+                root {apps_root_dir};
+                index  index.html index.htm;
+                try_files $uri $uri/ {path_prefix}/index.html =404;
+            }}
+            """
+        else:  # python_app
+            if not path_prefix.endswith('/'): path_prefix += '/'
+            location_content = f"""
+    # Config for {app_name} at location {path_prefix}
+    location {path_prefix} {{
+        proxy_pass http://localhost:{port}/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }}
+    """
         location_conf_path.write_text(location_content, encoding="utf-8")
 
     else:  # is_domain_target
@@ -608,14 +745,27 @@ location {path_prefix} {{
         location_folder_for_domain = NGINX_LOCATIONS_DIR / server_name
         location_folder_for_domain.mkdir(exist_ok=True)
 
-        proxy_block = f"""
-    location / {{
-        proxy_pass http://localhost:{port};
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }}"""
+        content_block = ""
+        app_path = APPS_BASE_DIR / app_name
+
+        if app_type == "static_site":
+            # Конфиг для статики
+            content_block = f"""
+            location / {{
+                root   {app_path.as_posix()};
+                index  index.html index.htm;
+                try_files $uri $uri/ /index.html; # Для SPA-приложений
+            }}"""
+        else:
+            # Существующий конфиг для проксирования
+            content_block = f"""
+            location / {{
+                proxy_pass http://localhost:{port};
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }}"""
 
         use_ssl = False
         ssl_config_block = ""
@@ -648,7 +798,7 @@ server {{
 server {{
     {ssl_config_block}
     server_name {server_name};
-    {proxy_block}
+    {content_block}
     {include_line}
 }}
 """
@@ -657,7 +807,7 @@ server {{
 server {{
     listen 80;
     server_name {server_name};
-    {proxy_block}
+    {content_block}
     {include_line}
 }}
 """
@@ -668,20 +818,29 @@ server {{
 @app.get("/api/apps", response_model=List[App])
 async def get_apps_api(current_user: Annotated[User, Depends(get_current_active_user)]):
     """
-    Получает список всех развернутых приложений, выполняя живую проверку
-    работоспособности (health check) для каждого из них.
+    Получает список всех развернутых приложений. Для Python-приложений
+    выполняет живую проверку статуса. Статические сайты возвращаются как есть.
     """
     apps_from_db = get_all_apps()
-    updated_apps_tasks = []
 
-    # Создаем асинхронную задачу для проверки каждого приложения
+    python_apps_to_check = []
+    static_apps = []
+
+    # Разделяем приложения на два типа
     for app_info in apps_from_db:
-        updated_apps_tasks.append(check_and_update_app_status(app_info))
+        if app_info.app_type == "python_app":
+            python_apps_to_check.append(check_and_update_app_status(app_info))
+        else:  # static_site
+            static_apps.append(app_info)
 
-    # Запускаем все проверки параллельно и ждем результатов
-    updated_apps = await asyncio.gather(*updated_apps_tasks)
-
-    return updated_apps
+    # Запускаем проверки параллельно только для Python-приложений
+    if python_apps_to_check:
+        updated_python_apps = await asyncio.gather(*python_apps_to_check)
+        # Объединяем результаты
+        return updated_python_apps + static_apps
+    else:
+        # Если Python-приложений нет, просто возвращаем статические
+        return static_apps
 
 
 async def check_and_update_app_status(app_info: App) -> App:
@@ -721,6 +880,7 @@ async def check_and_update_app_status(app_info: App) -> App:
 @app.post("/api/deploy")
 async def deploy_app(
         current_user: Annotated[User, Depends(get_current_active_user)],
+        app_type: str = Form("python_app"),
         name: str = Form(...),
         start_script: str = Form("main.py"),
         port: Optional[int] = Form(None),
@@ -740,34 +900,31 @@ async def deploy_app(
 
     if nginx_proxy_target and nginx_proxy_target.strip().startswith('/'):
         if not parent_domain:
-            # Эта проверка дублируется, но она важна на случай прямого API вызова
             raise HTTPException(status_code=400, detail="A parent domain must be selected for path-based routing.")
 
         all_apps = get_all_apps()
         for app in all_apps:
             if app.nginx_proxy_target == nginx_proxy_target.strip() and app.parent_domain == parent_domain:
                 raise HTTPException(
-                    status_code=409,  # 409 Conflict - более подходящий код
+                    status_code=409,
                     detail=f"Path '{nginx_proxy_target}' is already in use by app '{app.name}' on domain '{parent_domain}'. Please choose a different path."
                 )
 
-        # --- ИСПРАВЛЕННАЯ ВАЛИДАЦИЯ NGINX TARGET ---
     if nginx_proxy_target:
         nginx_proxy_target = nginx_proxy_target.strip()
-        # Если это НЕ путь (не начинается с /), то валидируем его как доменное имя
         if not nginx_proxy_target.startswith('/'):
             if not re.match(r"^[a-zA-Z0-9.-]+$", nginx_proxy_target):
                 raise HTTPException(status_code=400,
                                     detail="Invalid Nginx domain name. Use only letters, numbers, hyphens, and dots.")
 
-    # Выдача порта
     apps = get_all_apps()
-    existing_ports = {app.port for app in apps}
-    if port and port in existing_ports:
-        raise HTTPException(status_code=400, detail=f"Port {port} is already used.")
-    final_port = port if port else find_free_port(BASE_PORT, existing_ports)
+    existing_ports = {app.port for app in apps if app.port is not None} # Добавлена проверка на None
+    final_port = None
+    if app_type == "python_app":
+        if port and port in existing_ports:
+            raise HTTPException(status_code=400, detail=f"Port {port} is already used.")
+        final_port = port if port else find_free_port(BASE_PORT, existing_ports)
 
-    # Парсинг ENV
     env_vars = {}
     if env_vars_str:
         for line in env_vars_str.strip().split('\n'):
@@ -775,27 +932,23 @@ async def deploy_app(
                 key, value = line.split('=', 1)
                 env_vars[key.strip()] = value.strip()
 
-    # Сохранение ZIP-файла
     backup_dir = BACKUPS_DIR / name
     backup_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     backup_filename = f"deploy_{timestamp}_{zip_file.filename}"
     backup_zip_path = backup_dir / backup_filename
 
-    # Используем асинхронное чтение и запись, чтобы гарантировать
-    # полное сохранение файла до завершения запроса.
     try:
         with open(backup_zip_path, "wb") as buffer:
-            while content := await zip_file.read(1024 * 1024):  # Читаем по 1 МБ
+            while content := await zip_file.read(1024 * 1024):
                 buffer.write(content)
     except Exception as e:
-        # Если не удалось даже сохранить файл, сообщаем об ошибке сразу
         raise HTTPException(status_code=500, detail=f"Could not save uploaded file: {e}")
     finally:
-        # Важно закрыть файл, чтобы освободить ресурсы
         await zip_file.close()
 
     app_data = AppCreate(
+        app_type=app_type,
         name=name, start_script=start_script, port=final_port,
         python_executable=python_executable,
         nginx_proxy_target=nginx_proxy_target,
@@ -805,10 +958,13 @@ async def deploy_app(
     )
 
     task_id = str(uuid.uuid4())
-    # Запускаем тяжелую задачу в фоне
-    asyncio.create_task(perform_deployment(task_id, app_data, backup_zip_path))
+    if app_type == "static_site":
+        asyncio.create_task(perform_static_deployment(task_id, app_data, backup_zip_path))
+    else:
+        asyncio.create_task(perform_deployment(task_id, app_data, backup_zip_path))
 
-    # Немедленно отвечаем клиенту, что задача принята
+    # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+    # Этот return должен быть на том же уровне, что и if/else, чтобы выполняться для обоих случаев.
     return JSONResponse(status_code=202, content={"message": "Deployment process started", "task_id": task_id})
 
 
@@ -818,18 +974,18 @@ def update_app_config(
         config: AppConfigUpdate,
         current_user: Annotated[User, Depends(get_current_active_user)]
 ):
-    """Обновляет конфигурацию существующего приложения."""
+    """Обновляет конфигурацию существующего приложения (Python или статика)."""
     app_info = get_app_by_name(app_name)
     if not app_info:
         raise HTTPException(status_code=404, detail="App not found")
 
+    # --- Общая валидация для обоих типов ---
     if config.nginx_proxy_target and config.nginx_proxy_target.strip().startswith('/'):
         if not config.parent_domain:
             raise HTTPException(status_code=400, detail="A parent domain must be selected for path-based routing.")
 
         all_apps = get_all_apps()
         for app in all_apps:
-            # Ищем конфликт, но ИСКЛЮЧАЕМ само приложение, которое мы редактируем
             if app.name != app_name:
                 if app.nginx_proxy_target == config.nginx_proxy_target.strip() and app.parent_domain == config.parent_domain:
                     raise HTTPException(
@@ -837,27 +993,46 @@ def update_app_config(
                         detail=f"Path '{config.nginx_proxy_target}' is already in use by app '{app.name}' on domain '{config.parent_domain}'. Please choose a different path."
                     )
 
-    # Проверка, не занят ли новый порт другим приложением
+    # Уточненная проверка изменений в конфиге Nginx
+    nginx_config_changed = (
+            app_info.port != config.port or
+            app_info.nginx_proxy_target != config.nginx_proxy_target or
+            app_info.ssl_certificate_name != config.ssl_certificate_name or
+            app_info.parent_domain != config.parent_domain
+    )
+
+    # --- Логика для статического сайта ---
+    if app_info.app_type == "static_site":
+        if nginx_config_changed:
+            _update_nginx_config_for_app(app_name,
+                                         config.nginx_proxy_target,
+                                         None,  # port is always None
+                                         config.ssl_certificate_name,
+                                         config.parent_domain,
+                                         "static_site")
+            run_command_sync(NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
+
+        # Обновляем данные в БД
+        app_info.nginx_proxy_target = config.nginx_proxy_target
+        app_info.ssl_certificate_name = config.ssl_certificate_name
+        app_info.parent_domain = config.parent_domain
+        add_or_update_app(app_info)
+        return {"message": f"Configuration for static site '{app_name}' updated successfully."}
+
+    # --- Логика для Python-приложения (существующий код с улучшениями) ---
     if config.port != app_info.port:
         apps = get_all_apps()
-        existing_ports = {app.port for app in apps if app.name != app_name}
+        existing_ports = {app.port for app in apps if app.name != app_name and app.port is not None}
         if config.port in existing_ports:
             raise HTTPException(status_code=400, detail=f"Port {config.port} is already used by another app.")
 
     original_status_was_running = (app_info.status == "running")
-    nginx_config_changed = (
-            app_info.port != config.port or
-            app_info.nginx_proxy_target != config.nginx_proxy_target or
-            app_info.ssl_certificate_name != config.ssl_certificate_name
-    )
 
     try:
-        # 1. Остановить сервис, если он был запущен
         if original_status_was_running:
             run_command_sync(f'"{NSSM_PATH}" stop "{app_name}"')
-            time.sleep(2)  # Даем сервису время остановиться
+            time.sleep(2)
 
-        # 2. Обновить параметры NSSM
         final_start_script = config.start_script
         if 'uvicorn' in final_start_script:
             final_start_script = re.sub(r'\s--host\s+\S+', '', final_start_script)
@@ -870,23 +1045,21 @@ def update_app_config(
                 env_vars_str += f' {key}="{value}"'
         run_command_sync(f'"{NSSM_PATH}" set "{app_name}" AppEnvironmentExtra "{env_vars_str}"')
 
-        # 3. Обновить конфиг Nginx, если нужно
         if nginx_config_changed:
             _update_nginx_config_for_app(app_name,
                                          config.nginx_proxy_target,
                                          config.port,
                                          config.ssl_certificate_name,
-                                         config.parent_domain)
-            code, out, err = run_command_sync(NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
-            if code != 0:
-                print(f"Warning: Failed to reload Nginx for {app_name}: {err or out}")
+                                         config.parent_domain,
+                                         "python_app")  # Явно указываем тип
+            run_command_sync(NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
 
-            # 4. Обновить данные в БД
         app_info.port = config.port
         app_info.start_script = final_start_script
         app_info.nginx_proxy_target = config.nginx_proxy_target
         app_info.ssl_certificate_name = config.ssl_certificate_name
         app_info.env_vars = config.env_vars
+        app_info.parent_domain = config.parent_domain  # Добавлено обновление этого поля
 
         if original_status_was_running:
             run_command_sync(f'"{NSSM_PATH}" start "{app_name}"')
@@ -1009,7 +1182,7 @@ def control_app(app_name: str, payload: AppAction, current_user: Annotated[User,
 
 
 @app.delete("/api/apps/{app_name}")
-def delete_app_api(app_name: str, current_user: Annotated[User, Depends(get_current_active_user)]):
+def delete_app_api(app_name: str, background_tasks: BackgroundTasks, current_user: Annotated[User, Depends(get_current_active_user)]):
     """Полное удаление приложения с принудительным завершением процесса."""
     app_info = get_app_by_name(app_name)
     if not app_info:
@@ -1018,24 +1191,26 @@ def delete_app_api(app_name: str, current_user: Annotated[User, Depends(get_curr
     backup_dir = BACKUPS_DIR / app_name
 
     try:
-        # 1. Остановить и принудительно завершить процесс
-        run_command_sync(f'"{NSSM_PATH}" stop "{app_name}"')
-        time.sleep(1)
-        try:
-            netstat_cmd = f'netstat -aon | findstr "LISTENING" | findstr ":{app_info.port}"'
-            code, out, err = run_command_sync(netstat_cmd)
-            if code == 0 and out:
-                pid = int(out.strip().split()[-1])
-                os.kill(pid, signal.SIGTERM)
-                time.sleep(0.5)
-                os.kill(pid, signal.SIGKILL)
-        except Exception:
-            pass
+        # Шаги 1 и 2: Управление сервисом, применимо только к Python-приложениям
+        if app_info.app_type == "python_app":
+            # 1. Остановить и принудительно завершить процесс
+            run_command_sync(f'"{NSSM_PATH}" stop "{app_name}"')
+            time.sleep(1)
+            try:
+                netstat_cmd = f'netstat -aon | findstr "LISTENING" | findstr ":{app_info.port}"'
+                code, out, err = run_command_sync(netstat_cmd)
+                if code == 0 and out:
+                    pid = int(out.strip().split()[-1])
+                    os.kill(pid, signal.SIGTERM)
+                    time.sleep(0.5)
+                    os.kill(pid, signal.SIGKILL)
+            except Exception:
+                pass  # Игнорируем ошибки, если процесс уже завершен
 
-        # 2. Удалить службу NSSM
-        run_command_sync(f'"{NSSM_PATH}" remove "{app_name}" confirm')
+            # 2. Удалить службу NSSM
+            run_command_sync(f'"{NSSM_PATH}" remove "{app_name}" confirm')
 
-        # 3. Удалить файлы приложения
+        # 3. Удалить файлы приложения (общий шаг)
         if Path(app_info.app_path).exists():
             shutil.rmtree(app_info.app_path)
 
@@ -1066,10 +1241,11 @@ def delete_app_api(app_name: str, current_user: Annotated[User, Depends(get_curr
                 config_deleted = True
 
         if config_deleted:
-            run_command_sync(NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
-        # --- КОНЕЦ ИСПРАВЛЕНИЙ ---
+            # --- ИСПРАВЛЕНИЕ: Перезагружаем Nginx в фоне ПОСЛЕ отправки ответа ---
+            background_tasks.add_task(run_command_sync, NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
+            # --- КОНЕЦ ИСПРАВЛЕНИЙ ---
 
-        # 6. Удалить из БД
+            # 6. Удалить из БД
         delete_app(app_name)
         return {"message": f"App '{app_name}' and its configs, backups, and service deleted successfully."}
     except Exception as e:
@@ -1094,28 +1270,40 @@ def update_app(app_name: str, current_user: Annotated[User, Depends(get_current_
         shutil.copyfileobj(zip_file.file, buffer)
 
     try:
-        # 2. Останавливаем сервис
-        code, _, err = run_command_sync(f'"{NSSM_PATH}" stop "{app_name}"')
-        if code != 0: raise Exception(f"NSSM stop failed: {err}")
-        time.sleep(2)  # Ждем остановки
+        # --- НАЧАЛО ИЗМЕНЕНИЙ ---
+        if app_info.app_type == "python_app":
+            # Логика обновления для Python приложения
+            run_command_sync(f'"{NSSM_PATH}" stop "{app_name}"')
+            time.sleep(2)
+            _redeploy_from_zip(app_info, backup_zip_path)
+            run_command_sync(f'"{NSSM_PATH}" start "{app_name}"')
+            app_info.status = _get_app_final_status(app_name)
+            add_or_update_app(app_info)
+            return {
+                "message": f"App '{app_name}' updated and restarted successfully. Final status: {app_info.status.upper()}"
+            }
 
-        # 3. Выполняем переразвертывание (синхронный helper)
-        _redeploy_from_zip(app_info, backup_zip_path)
-
-        # 4. Запускаем сервис
-        code, _, err = run_command_sync(f'"{NSSM_PATH}" start "{app_name}"')
-        if code != 0: raise Exception(f"NSSM start failed: {err}")
-
-        # 5. Обновляем статус в БД
-        app_info.status = _get_app_final_status(app_name)  # Надежная проверка статуса
-        add_or_update_app(app_info)
-        return {
-            "message": f"App '{app_name}' updated and restarted successfully. Final status: {app_info.status.upper()}"}
+        elif app_info.app_type == "static_site":
+            # Логика обновления для статического сайта
+            app_path = Path(app_info.app_path)
+            # 1. Полностью очищаем папку
+            shutil.rmtree(app_path)
+            app_path.mkdir()
+            # 2. Распаковываем новый архив
+            with zipfile.ZipFile(backup_zip_path, 'r') as zip_ref:
+                zip_ref.extractall(app_path)
+            # 3. Перезагружаем Nginx, чтобы он подхватил новые файлы
+            run_command_sync(NGINX_RELOAD_CMD)
+            # Статус у статики не меняется, но можно пересохранить на всякий случай
+            add_or_update_app(app_info)
+            return {"message": f"Static site '{app_name}' updated successfully."}
+        # --- КОНЕЦ ИЗМЕНЕНИЙ ---
     except Exception as e:
-        # Пытаемся запустить сервис обратно, даже если обновление не удалось
-        run_command_sync(f'"{NSSM_PATH}" start "{app_name}"')
-        app_info.status = _get_app_final_status(app_name)  # Обновляем статус в БД
-        add_or_update_app(app_info)
+        # В случае ошибки пытаемся запустить Python-приложение обратно
+        if app_info.app_type == "python_app":
+            run_command_sync(f'"{NSSM_PATH}" start "{app_name}"')
+            app_info.status = _get_app_final_status(app_name)
+            add_or_update_app(app_info)
         raise HTTPException(status_code=500, detail=f"Failed to update app: {str(e)}")
 
 

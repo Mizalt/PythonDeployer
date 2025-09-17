@@ -48,6 +48,12 @@ def init_db():
             print("INFO: Column 'parent_domain' added to 'apps' table.")
         except sqlite3.OperationalError:
             pass  # Колонка уже существует
+        try:  # <-- ДОБАВЬТЕ ЭТОТ БЛОК
+            cursor.execute("ALTER TABLE apps ADD COLUMN app_type TEXT NOT NULL DEFAULT 'python_app'")
+            conn.commit()
+            print("INFO: Column 'app_type' added to 'apps' table.")
+        except sqlite3.OperationalError:
+            pass  # Колонка уже существует
 
 def row_to_app_model(row: sqlite3.Row) -> App:
     """Преобразует строку из БД в Pydantic модель App."""
@@ -85,11 +91,12 @@ def add_or_update_app(app: App):
         env_vars_json = json.dumps(app.env_vars) if app.env_vars else None
         data = (
             app.name, app.port, app.app_path, app.start_script, app.log_path, app.status,
-            app.python_executable, app.nginx_proxy_target, env_vars_json, app.ssl_certificate_name, app.parent_domain
+            app.python_executable, app.nginx_proxy_target, env_vars_json, app.ssl_certificate_name,
+            app.parent_domain, app.app_type
         )
         cursor.execute('''
-            INSERT INTO apps (name, port, app_path, start_script, log_path, status, python_executable, nginx_proxy_target, env_vars, ssl_certificate_name, parent_domain)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO apps (name, port, app_path, start_script, log_path, status, python_executable, nginx_proxy_target, env_vars, ssl_certificate_name, parent_domain, app_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET
                 port=excluded.port,
                 app_path=excluded.app_path,
@@ -100,7 +107,8 @@ def add_or_update_app(app: App):
                 nginx_proxy_target=excluded.nginx_proxy_target,
                 env_vars=excluded.env_vars,
                 ssl_certificate_name=excluded.ssl_certificate_name,
-                parent_domain=excluded.parent_domain
+                parent_domain=excluded.parent_domain,
+                app_type=excluded.app_type
         ''', data)
         conn.commit()
 

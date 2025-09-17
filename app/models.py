@@ -7,23 +7,25 @@ from datetime import datetime
 # --- Модели для Приложений ---
 
 class App(BaseModel):
+    app_type: Literal["python_app", "static_site"] = "python_app"
     name: str = Field(..., description="Уникальное имя приложения (имя сервиса)")
-    port: int = Field(..., description="Порт, на котором работает приложение")
+    port: Optional[int] = Field(None, description="Порт, на котором работает приложение")
+    start_script: Optional[str] = Field(None, description="Команда для запуска приложения")
     app_path: str = Field(..., description="Путь к основной папке приложения")
-    start_script: str = Field(..., description="Команда для запуска приложения")
     log_path: Optional[str] = Field(None, description="Путь к лог-файлу сервиса")
     status: Literal["running", "stopped", "deploying", "error"] = "stopped"
     python_executable: Optional[str] = Field(None, description="Путь к исполняемому файлу Python")
     nginx_proxy_target: Optional[str] = Field(None, description="Цель для Nginx (подпуть или домен)")
     env_vars: Optional[Dict[str, str]] = Field(default_factory=dict, description="Переменные окружения")
-    ssl_certificate_name: Optional[str] = Field(None, description="Имя SSL сертификата для Nginx")  # НОВОЕ ПОЛЕ
+    ssl_certificate_name: Optional[str] = Field(None, description="Имя SSL сертификата для Nginx")
     parent_domain: Optional[str] = Field(None, description="Родительский домен для приложений с путем")
 
 
 class AppCreate(BaseModel):
+    app_type: Literal["python_app", "static_site"] = "python_app"
     name: str
-    start_script: str = "main.py"
-    port: int
+    start_script: Optional[str] = "main.py"
+    port: Optional[int] = None
     python_executable: Optional[str] = None
     nginx_proxy_target: Optional[str] = None
     env_vars: Optional[Dict[str, str]] = None
@@ -32,8 +34,8 @@ class AppCreate(BaseModel):
 
 
 class AppConfigUpdate(BaseModel):
-    port: int
-    start_script: str
+    port: Optional[int] = None
+    start_script: Optional[str] = None
     nginx_proxy_target: Optional[str] = None
     env_vars: Optional[Dict[str, str]] = Field(default_factory=dict)
     ssl_certificate_name: Optional[str] = None

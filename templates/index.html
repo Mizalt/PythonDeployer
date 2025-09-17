@@ -376,6 +376,12 @@
         .custom-confirm-modal-buttons .confirm-no:hover {
             background-color: #5a6268;
         }
+
+        /* Стили для обертки полей формы */
+        .form-group {
+            grid-column: 1 / -1; /* Занимает всю ширину */
+            display: contents;   /* "Растворяет" div, чтобы его дочерние элементы встроились в grid */
+        }
     </style>
 
 </head>
@@ -395,31 +401,57 @@
         <div class="card">
             <h2>Развернуть новое Python приложение</h2>
             <form id="deploy-form">
+                <div style="grid-column: 1 / -1; display: flex; gap: 1rem; margin-bottom: 1rem; justify-content: center;">
+                    <label>
+                        <input type="radio" name="app_type" value="python_app" checked> Python приложение
+                    </label>
+                    <label>
+                        <input type="radio" name="app_type" value="static_site"> Статический сайт
+                    </label>
+                </div>
+
+                <!-- Группа "Имя" -->
                 <label for="name">Имя приложения:</label>
                 <input type="text" id="name" name="name" required placeholder="my-fastapi-app">
 
-                <label for="start_script">Скрипт запуска:</label>
-                <div class="input-with-tooltip">
-                    <input type="text" id="start_script" name="start_script" value="main.py" style="box-sizing: border-box;">
-                    <button type="button" class="info-button" id="start-script-info-button">
-                        <i class="fas fa-info-circle"></i>
-                        <span class="tooltip-text">
-                            Укажите файл (например, <strong>main.py</strong>) или полную команду (например, <strong>-m uvicorn main:app</strong>).<br>
-                            Для простого запуска файла убедитесь, что в нем есть блок <strong>if __name__ == '__main__':</strong> для старта сервера.
-                            <small style="color: #495057; background-color: #e9ecef; padding: 2px 4px; border-radius: 3px; display: inline-block; margin-top: 5px;">
-                                <strong>Доступ:</strong> Через кнопку "Просмотр" (внутренний) или через Nginx, если настроен "Веб-доступ".
-                            </small>
-                        </span>
-                    </button>
+                <!-- Группа "Скрипт запуска" (только для Python) -->
+                <div class="form-group python-only">
+                    <label for="start_script">Скрипт запуска:</label>
+                    <div class="input-with-tooltip">
+                        <input type="text" id="start_script" name="start_script" value="main.py" style="box-sizing: border-box;">
+                        <button type="button" class="info-button" id="start-script-info-button">
+                            <i class="fas fa-info-circle"></i>
+                            <span class="tooltip-text">
+                                Укажите файл (например, <strong>main.py</strong>) или полную команду (например, <strong>-m uvicorn main:app</strong>).<br>
+                                <strong>Доступ:</strong> Через кнопку "Просмотр" или Nginx.
+                            </span>
+                        </button>
+                    </div>
                 </div>
 
-                <label for="port">Порт приложения:</label>
-                <input type="number" id="port" name="port" placeholder="Авто (например, 8001)">
+                <!-- Группа "Порт" (только для Python) -->
+                <div class="form-group python-only">
+                    <label for="port">Порт приложения:</label>
+                    <input type="number" id="port" name="port" placeholder="Авто (например, 8001)">
+                </div>
 
+                <!-- Группа "Версия Python" (только для Python) -->
+                <div class="form-group python-only">
+                    <label for="python_executable">Версия Python:</label>
+                    <select id="python_executable" name="python_executable">
+                        {% for display_name, executable_path in python_versions.items() %}
+                            <option value="{{ executable_path }}" {% if executable_path == default_python_executable %}selected{% endif %}>
+                                {{ display_name }}
+                            </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <!-- Группа "Веб-доступ" -->
                 <label for="deploy-nginx-enable">Веб-доступ (Nginx):</label>
                 <input type="checkbox" id="deploy-nginx-enable" name="nginx_enable" checked style="justify-self: start; align-self: center;">
 
-                <!-- Оборачиваем все Nginx-опции в один div -->
+                <!-- Опции Nginx -->
                 <div id="deploy-nginx-options" style="grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; gap: inherit;">
                     <label for="deploy-path-domain">Путь или Домен (Nginx):</label>
                     <div class="input-with-tooltip">
@@ -427,11 +459,9 @@
                         <button type="button" class="info-button" id="deploy-path-domain-info-button">
                             <i class="fas fa-info-circle"></i>
                             <span class="tooltip-text">
-                                Укажите:
                                 <ul>
-                                    <li><strong>/мой-путь</strong>: Для доступа через подпуть на основном домене (например, <code>18zim.ru/мой-путь</code>).</li>
-                                    <li><strong>sub.domain.com</strong>: Для доступа через поддомен (требуется настройка DNS).</li>
-                                    <li>Оставьте пустым, если не нужен доступ через Nginx.</li>
+                                    <li><strong>/мой-путь</strong>: Для доступа через подпуть.</li>
+                                    <li><strong>sub.domain.com</strong>: Для доступа через поддомен.</li>
                                 </ul>
                             </span>
                         </button>
@@ -439,19 +469,20 @@
                     <div id="deploy-parent-domain-group" class="hidden" style="grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; margin-top: -0.5rem;">
                         <label for="deploy-parent-domain" style="color: #0056b3;">└─ Родительский домен:</label>
                         <select id="deploy-parent-domain" name="parent_domain" style="border-color: #007bff;">
-                            <!-- Опции будут загружены динамически -->
                             <option value="">-- Выберите домен --</option>
                         </select>
                     </div>
-
                     <label for="deploy-ssl-cert-select">SSL Сертификат:</label>
                     <select id="deploy-ssl-cert-select" name="ssl_certificate_name">
                         <option value="">-- Нет (только HTTP) --</option>
-                        <!-- Опции будут загружены динамически -->
                     </select>
                 </div>
+
+                <!-- Группа "ZIP-архив" -->
                 <label for="zip_file">ZIP-архив:</label>
                 <input type="file" id="zip_file" name="zip_file" required accept=".zip">
+
+                <!-- Кнопка -->
                 <button type="submit">Развернуть</button>
             </form>
         </div>
@@ -558,11 +589,15 @@
     <div class="modal-content">
         <h2 id="settings-modal-title">Настройки приложения</h2>
         <form id="settings-form">
-            <label for="settings-port">Порт приложения:</label>
-            <input type="number" id="settings-port" required>
+            <div class="form-group" id="settings-group-port">
+                <label for="settings-port">Порт приложения:</label>
+                <input type="number" id="settings-port" required>
+            </div>
 
-            <label for="settings-start-script">Скрипт запуска:</label>
-            <input type="text" id="settings-start-script" required>
+            <div class="form-group" id="settings-group-start-script">
+                <label for="settings-start-script">Скрипт запуска:</label>
+                <input type="text" id="settings-start-script" required>
+            </div>
 
             <label for="settings-nginx-enable">Веб-доступ (Nginx):</label>
             <input type="checkbox" id="settings-nginx-enable" name="nginx_enable" style="justify-self: start; align-self: center;">
@@ -599,8 +634,10 @@
                 </select>
             </div>
 
-            <label for="settings-env-vars" style="align-self: start; padding-top: 0.7rem;">Переменные окружения:</label>
-            <textarea id="settings-env-vars" rows="6" placeholder="KEY1=VALUE1&#10;KEY2=VALUE2"></textarea>
+            <div class="form-group" id="settings-group-env-vars">
+                <label for="settings-env-vars" style="align-self: start; padding-top: 0.7rem;">Переменные окружения:</label>
+                <textarea id="settings-env-vars" rows="6" placeholder="KEY1=VALUE1&#10;KEY2=VALUE2"></textarea>
+            </div>
 
             <div></div>
             <div class="modal-controls" style="margin-top: 0; justify-content: flex-start;">
@@ -748,6 +785,40 @@
         // --- Управление UI для формы развертывания ---
         const deployNginxEnableCheckbox = document.getElementById('deploy-nginx-enable');
         const deployNginxOptions = document.getElementById('deploy-nginx-options');
+
+
+        // Функция для управления видимостью полей
+        function toggleDeployFormFields(appType) {
+            const pythonOnlyElements = document.querySelectorAll('.python-only');
+            const nginxCheckbox = document.getElementById('deploy-nginx-enable');
+            const nginxOptions = document.getElementById('deploy-nginx-options');
+            const formTitle = document.querySelector('#deploy-form').previousElementSibling;
+
+            if (appType === 'static_site') {
+                formTitle.textContent = 'Развернуть новый статический сайт';
+                pythonOnlyElements.forEach(el => el.style.display = 'none');
+
+                // Для статики Nginx обязателен
+                nginxCheckbox.checked = true;
+                nginxCheckbox.disabled = true;
+                nginxOptions.style.display = 'grid';
+            } else { // python_app
+                formTitle.textContent = 'Развернуть новое Python приложение';
+                pythonOnlyElements.forEach(el => el.style.display = 'contents');
+
+                nginxCheckbox.disabled = false;
+                // Восстанавливаем состояние чекбокса Nginx
+                nginxOptions.style.display = nginxCheckbox.checked ? 'grid' : 'none';
+            }
+        }
+
+        // Слушатель на переключатели
+        deployForm.querySelectorAll('input[name="app_type"]').forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                toggleDeployFormFields(e.target.value);
+            });
+        });
+        toggleDeployFormFields('python_app');
 
         deployNginxEnableCheckbox.addEventListener('change', () => {
             deployNginxOptions.style.display = deployNginxEnableCheckbox.checked ? 'grid' : 'none';
@@ -1009,32 +1080,54 @@
                     appElement.className = 'app';
                     appElement.id = `app-${app.name}`;
 
+                    const isStatic = app.app_type === 'static_site';
                     const isRunning = app.status === 'running';
-                    const startDisabled = isRunning ? 'disabled' : '';
-                    const stopDisabled = !isRunning ? 'disabled' : '';
-                    const restartDisabled = !isRunning ? 'disabled' : '';
-                    const updateDisabled = '';
 
+                    // Для статики считаем, что она всегда "запущена", если существует. Для Python-приложений берем реальный статус.
+                    const finalStatus = isStatic ? 'running' : app.status;
+                    const statusClass = isStatic ? 'running' : app.status; // Для цвета
+
+                    // --- Формируем HTML для кнопок в зависимости от типа приложения ---
+
+                    // Кнопка "Просмотр" (через прокси) нужна только для Python-приложений
+                    const viewButtonHtml = isStatic
+                        ? ''
+                        : `<button data-action="view" class="view-icon"><i class="fas fa-eye"></i><span class="tooltip-text">Просмотр</span></button>`;
+
+                    // Кнопки управления сервисом (Start/Stop/Restart) нужны только для Python-приложений
+                    const serviceControlButtonsHtml = isStatic
+                        ? ''
+                        : `<button data-action="start" class="start-icon" ${isRunning ? 'disabled' : ''}><i class="fas fa-play"></i><span class="tooltip-text">Запустить</span></button>
+                           <button data-action="stop" class="stop-icon" ${!isRunning ? 'disabled' : ''}><i class="fas fa-stop"></i><span class="tooltip-text">Остановить</span></button>
+                           <button data-action="restart" class="restart-icon" ${!isRunning ? 'disabled' : ''}><i class="fas fa-redo"></i><span class="tooltip-text">Перезапустить</span></button>`;
+
+                    // Кнопка "Логи" нужна только для Python-приложений
+                    const logsButtonHtml = isStatic
+                        ? ''
+                        : `<button data-action="logs" class="logs-icon"><i class="fas fa-file-alt"></i><span class="tooltip-text">Логи</span></button>`;
+
+                    // --- Собираем финальный HTML для элемента приложения ---
                     appElement.innerHTML = `
-                            <div class="app-info">
-                                <strong>${app.name}</strong>
-                                <span class="status status-${app.status}">${app.status}</span>
-                                <div class="details">
-                                    Port: ${app.port} |
-                                    Nginx: ${app.nginx_proxy_target ? `<span>${app.nginx_proxy_target} ${app.ssl_certificate_name ? '<i class="fas fa-lock" style="color: #28a745;"></i>' : ''}</span>` : 'N/A'}
-                                </div>
+                        <div class="app-info">
+                            <strong>${app.name}</strong>
+                            <span class="status status-${statusClass}">${finalStatus}</span>
+                            <span style="background-color: #e9ecef; color: #495057; padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.8em; margin-left: 5px; vertical-align: middle;">
+                                ${isStatic ? 'Статика' : 'Python'}
+                            </span>
+                            <div class="details">
+                                ${isStatic ? 'Тип: Статический сайт' : `Port: ${app.port}`} |
+                                Nginx: ${app.nginx_proxy_target ? `<span><a href="${app.nginx_proxy_target.startsWith('/') ? app.nginx_proxy_target : 'http://' + app.nginx_proxy_target}" target="_blank">${app.nginx_proxy_target}</a> ${app.ssl_certificate_name ? '<i class="fas fa-lock" style="color: #28a745;"></i>' : ''}</span>` : 'N/A'}
                             </div>
-                            <div class="app-controls">
-                                <button data-action="view" class="view-icon" ><i class="fas fa-eye"></i><span class="tooltip-text">Просмотр</span></button>
-                                <button data-action="settings" class="settings-icon" ><i class="fas fa-cog"></i><span class="tooltip-text">Настройки</span></button>
-                                <button data-action="start" class="start-icon" ${startDisabled}><i class="fas fa-play"></i><span class="tooltip-text">Запустить</span></button>
-                                <button data-action="stop" class="stop-icon" ${stopDisabled}><i class="fas fa-stop"></i><span class="tooltip-text">Остановить</span></button>
-                                <button data-action="restart" class="restart-icon" ${restartDisabled}><i class="fas fa-redo"></i><span class="tooltip-text">Перезапустить</span></button>
-                                <button data-action="update" class="update-icon" ${updateDisabled}><i class="fas fa-upload"></i><span class="tooltip-text">Обновить</span></button>
-                                <button data-action="logs" class="logs-icon" ><i class="fas fa-file-alt"></i><span class="tooltip-text">Логи</span></button>
-                                <button data-action="history" class="history-icon" ><i class="fas fa-history"></i><span class="tooltip-text">История</span></button>
-                                <button data-action="delete" class="delete-icon" ><i class="fas fa-trash-alt"></i><span class="tooltip-text">Удалить</span></button>
-                            </div>`;
+                        </div>
+                        <div class="app-controls">
+                            ${viewButtonHtml}
+                            <button data-action="settings" class="settings-icon"><i class="fas fa-cog"></i><span class="tooltip-text">Настройки</span></button>
+                            ${serviceControlButtonsHtml}
+                            <button data-action="update" class="update-icon"><i class="fas fa-upload"></i><span class="tooltip-text">Обновить</span></button>
+                            ${logsButtonHtml}
+                            <button data-action="history" class="history-icon"><i class="fas fa-history"></i><span class="tooltip-text">История</span></button>
+                            <button data-action="delete" class="delete-icon"><i class="fas fa-trash-alt"></i><span class="tooltip-text">Удалить</span></button>
+                        </div>`;
 
                     appElement.querySelector('.app-controls').addEventListener('click', (e) => handleAppControlClick(e, app.name));
                     fragment.appendChild(appElement);
@@ -1203,10 +1296,28 @@
                 showToast('Не удалось найти данные для приложения ' + appName, 'error');
                 return;
             }
-            settingsModalTitle.textContent = `Настройки для "${appName}"`;
-            document.getElementById('settings-port').value = appData.port;
-            document.getElementById('settings-start-script').value = appData.start_script;
+            const isStatic = appData.app_type === 'static_site';
 
+            settingsModalTitle.textContent = `Настройки для "${appName}"`;
+
+            // --- НАЧАЛО ИЗМЕНЕНИЙ ---
+            // Показываем или скрываем поля в зависимости от типа приложения
+            const portField = document.getElementById('settings-group-port');
+            const scriptField = document.getElementById('settings-group-start-script');
+            const envVarsField = document.getElementById('settings-group-env-vars');
+
+            if (isStatic) {
+                // Для статики скрываем порт и скрипт запуска
+                portField.style.display = 'none';
+                scriptField.style.display = 'none';
+            } else {
+                // Для Python-приложений показываем и заполняем
+                portField.style.display = 'contents';
+                scriptField.style.display = 'contents';
+                document.getElementById('settings-port').value = appData.port;
+                document.getElementById('settings-start-script').value = appData.start_script;
+            }
+            // --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
             const pathDomainInput = document.getElementById('settings-path-domain');
             const nginxEnabledCheckbox = document.getElementById('settings-nginx-enable');
@@ -1222,11 +1333,9 @@
                 pathDomainInput.value = '';
             }
 
-            // Сразу после заполнения поля, проверяем его значение и показываем/скрываем dropdown
             const parentDomainGroup = document.getElementById('settings-parent-domain-group');
             const parentDomainSelect = document.getElementById('settings-parent-domain');
 
-            // ЭТА ЧАСТЬ КОДА ОТСУТСТВУЕТ ИЛИ НЕПОЛНАЯ
             if (pathDomainInput.value.startsWith('/')) {
                 parentDomainGroup.classList.remove('hidden');
                 parentDomainSelect.value = appData.parent_domain || '';
@@ -1236,8 +1345,15 @@
             }
 
             document.getElementById('settings-ssl-cert-select').value = appData.ssl_certificate_name || '';
-            const envVarsString = Object.entries(appData.env_vars || {}).map(([k, v]) => `${k}=${v}`).join('\n');
-            document.getElementById('settings-env-vars').value = envVarsString;
+
+            // Переменные окружения тоже только для Python-приложений
+            if (isStatic) {
+                envVarsField.style.display = 'none';
+            } else {
+                envVarsField.style.display = 'contents';
+                const envVarsString = Object.entries(appData.env_vars || {}).map(([k, v]) => `${k}=${v}`).join('\n');
+                document.getElementById('settings-env-vars').value = envVarsString;
+            }
 
             settingsForm.dataset.appName = appName;
             settingsModal.classList.remove('hidden');
