@@ -240,7 +240,6 @@ def _get_app_final_status(app_name: str) -> str:
 
         if sc_code == 0:
             # Ищем строку "        STATE              : 4  RUNNING" или "        Состояние          : 4  RUNNING"
-            # ИЗМЕНЕНИЕ ЗДЕСЬ: Добавляем 'Состояние' в регулярное выражение
             match = re.search(r"(STATE|СОСТОЯНИЕ)\s+:\s+\d+\s+(RUNNING|STOPPED)", sc_out, re.IGNORECASE)
             if match:
                 sc_state = match.group(2).upper()  # Изменено на group(2) т.к. group(1) теперь "STATE" или "СОСТОЯНИЕ"
@@ -512,7 +511,6 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
                 with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
                     log_content = f.read()
                 if log_content:
-                    # ИЗМЕНЕНИЕ ЗДЕСЬ: Добавляем task_id
                     await manager.send_message("==================== СОДЕРЖИМОЕ ЛОГА ====================", task_id)
                     await manager.send_message(log_content[-2000:], task_id)
                     await manager.send_message("=========================================================", task_id)
@@ -969,9 +967,10 @@ async def deploy_app(
 
 
 @app.put("/api/apps/{app_name}/config")
-def update_app_config(
+async def update_app_config(
         app_name: str,
         config: AppConfigUpdate,
+        background_tasks: BackgroundTasks,
         current_user: Annotated[User, Depends(get_current_active_user)]
 ):
     """Обновляет конфигурацию существующего приложения (Python или статика)."""
@@ -1006,11 +1005,11 @@ def update_app_config(
         if nginx_config_changed:
             _update_nginx_config_for_app(app_name,
                                          config.nginx_proxy_target,
-                                         None,  # port is always None
+                                         None,
                                          config.ssl_certificate_name,
                                          config.parent_domain,
                                          "static_site")
-            run_command_sync(NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
+            background_tasks.add_task(run_command_sync, NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
 
         # Обновляем данные в БД
         app_info.nginx_proxy_target = config.nginx_proxy_target
@@ -1051,8 +1050,8 @@ def update_app_config(
                                          config.port,
                                          config.ssl_certificate_name,
                                          config.parent_domain,
-                                         "python_app")  # Явно указываем тип
-            run_command_sync(NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
+                                         "python_app")
+            background_tasks.add_task(run_command_sync, NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
 
         app_info.port = config.port
         app_info.start_script = final_start_script
@@ -1253,8 +1252,12 @@ def delete_app_api(app_name: str, background_tasks: BackgroundTasks, current_use
 
 
 @app.post("/api/apps/{app_name}/update")
-def update_app(app_name: str, current_user: Annotated[User, Depends(get_current_active_user)],
-               zip_file: UploadFile = File(...)):
+async def update_app(
+    app_name: str,
+    background_tasks: BackgroundTasks,
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    zip_file: UploadFile = File(...)
+):
     """Обновляет приложение из нового ZIP-архива."""
     app_info = get_app_by_name(app_name)
     if not app_info:
@@ -1270,7 +1273,6 @@ def update_app(app_name: str, current_user: Annotated[User, Depends(get_current_
         shutil.copyfileobj(zip_file.file, buffer)
 
     try:
-        # --- НАЧАЛО ИЗМЕНЕНИЙ ---
         if app_info.app_type == "python_app":
             # Логика обновления для Python приложения
             run_command_sync(f'"{NSSM_PATH}" stop "{app_name}"')
@@ -1283,6 +1285,7 @@ def update_app(app_name: str, current_user: Annotated[User, Depends(get_current_
                 "message": f"App '{app_name}' updated and restarted successfully. Final status: {app_info.status.upper()}"
             }
 
+
         elif app_info.app_type == "static_site":
             # Логика обновления для статического сайта
             app_path = Path(app_info.app_path)
@@ -1293,11 +1296,9 @@ def update_app(app_name: str, current_user: Annotated[User, Depends(get_current_
             with zipfile.ZipFile(backup_zip_path, 'r') as zip_ref:
                 zip_ref.extractall(app_path)
             # 3. Перезагружаем Nginx, чтобы он подхватил новые файлы
-            run_command_sync(NGINX_RELOAD_CMD)
-            # Статус у статики не меняется, но можно пересохранить на всякий случай
+            background_tasks.add_task(run_command_sync, NGINX_RELOAD_CMD)
             add_or_update_app(app_info)
-            return {"message": f"Static site '{app_name}' updated successfully."}
-        # --- КОНЕЦ ИЗМЕНЕНИЙ ---
+            return {"message": f"Static site '{app_name}' updated successfully. Nginx will now reload."}
     except Exception as e:
         # В случае ошибки пытаемся запустить Python-приложение обратно
         if app_info.app_type == "python_app":
@@ -1495,7 +1496,11 @@ async def save_nginx_config(config: NginxConfig, current_user: Annotated[User, D
 
 
 @app.delete("/api/nginx/config")
-async def delete_nginx_config(current_user: Annotated[User, Depends(get_current_active_user)], path: str = Query(...)):
+async def delete_nginx_config(
+        background_tasks: BackgroundTasks,
+        current_user: Annotated[User, Depends(get_current_active_user)],
+        path: str = Query(...)
+):
     """Удаляет указанный файл конфигурации Nginx."""
     target_path = Path(path)
 
@@ -1507,21 +1512,27 @@ async def delete_nginx_config(current_user: Annotated[User, Depends(get_current_
 
     try:
         target_path.unlink()
-        # После удаления файла рекомендуется перезагрузить Nginx
-        run_command_sync(NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
-        return {"message": f"Config file '{target_path.name}' deleted and Nginx reloaded successfully."}
+
+        # Это позволит немедленно вернуть ответ браузеру, избегая ошибки 'Failed to fetch'.
+        background_tasks.add_task(run_command_sync, NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
+
+        return {"message": f"Config file '{target_path.name}' deleted. Nginx will be reloaded in the background."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete config file: {e}")
 
 
 @app.post("/api/nginx/reload")
-def reload_nginx(current_user: Annotated[User, Depends(get_current_active_user)]):
-    """Перезагружает Nginx."""
-    code, out, err = run_command_sync(NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
-    if code != 0:
-        # Nginx часто выводит ошибки в stdout, поэтому объединяем
-        raise HTTPException(status_code=500, detail=f"Failed to reload Nginx: {err or out}")
-    return {"message": "Nginx reloaded successfully."}
+async def reload_nginx(
+    background_tasks: BackgroundTasks,
+    current_user: Annotated[User, Depends(get_current_active_user)]
+):
+    """Перезагружает Nginx в фоновом режиме."""
+    try:
+        background_tasks.add_task(run_command_sync, NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
+        return {"message": "Nginx reload command has been sent to the background."}
+    except Exception as e:
+        # Эта ошибка маловероятна, но на всякий случай
+        raise HTTPException(status_code=500, detail=f"Failed to schedule Nginx reload: {e}")
 
 
 def _update_deployer_nginx_config(domain: Optional[str], ssl_cert_name: Optional[str]):
