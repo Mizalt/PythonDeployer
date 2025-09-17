@@ -877,7 +877,7 @@
                 return;
             }
 
-            if (!(await customConfirm('Это действие перезапишет основной конфиг Nginx для Deployer и перезагрузит его. Продолжить?', 'Подтверждение'))) {
+            if (!(await customConfirm('Это действие перезапишет основной конфиг Nginx для Deployer и перезагрузит его. Панель станет временно недоступной. Продолжить?', 'Подтверждение'))) {
                 return;
             }
 
@@ -885,13 +885,13 @@
             button.disabled = true;
             button.textContent = 'Применение...';
 
-            showToast('Применяем настройки и перезагружаем Nginx... Панель может стать недоступной.', 'info', 5000);
+            // --- НАЧАЛО ИЗМЕНЕНИЯ: Адаптация под BackgroundTasks ---
 
-            // Функция для проверки восстановления соединения
+            // Эта функция остаётся такой же, она будет опрашивать сервер
             function checkConnection(attempts = 0) {
                 const maxAttempts = 15; // Ждем максимум 30 секунд (15 * 2c)
                 if (attempts >= maxAttempts) {
-                    showToast('Не удалось восстановить соединение с сервером. Пожалуйста, обновите страницу вручную.', 'error', 10000);
+                    showToast('Не удалось восстановить соединение с сервером после перезагрузки. Пожалуйста, обновите страницу вручную.', 'error', 10000);
                     button.disabled = false;
                     button.textContent = 'Применить и перезагрузить Nginx';
                     return;
@@ -899,56 +899,58 @@
 
                 setTimeout(async () => {
                     try {
-                        // Пытаемся сделать простой запрос, чтобы проверить, что сервер "ожил"
-                        const response = await fetch('/api/apps'); // Используем fetch без authedFetch, чтобы избежать редиректа на /login
-                        if (response.status === 200 || response.status === 401) { // 200 или 401 значат, что сервер отвечает
+                        const response = await fetch('/api/apps');
+                        if (response.status === 200 || response.status === 401) {
                             showToast('Перезагрузка Nginx завершена. Панель снова онлайн!', 'success');
                             button.disabled = false;
                             button.textContent = 'Применить и перезагрузить Nginx';
-                            // Умная перезагрузка страницы, если домен изменился
-                            const newUrl = `http${ssl_certificate_name ? 's' : ''}://${domain || window.location.hostname}`;
-                            if (domain && window.location.origin !== newUrl) {
-                                showToast(`Перенаправление на новый адрес: ${newUrl}`, 'info', 3000);
-                                setTimeout(() => window.location.href = newUrl, 2000);
+
+                            const newUrl = `http${ssl_certificate_name ? 's' : ''}://${domain || window.location.hostname}${window.location.port ? ':'+window.location.port : ''}`;
+                            const currentOrigin = window.location.origin;
+
+                            // Сравниваем без учета порта, если он стандартный
+                            if (domain && !currentOrigin.includes(domain)) {
+                                 showToast(`Перенаправление на новый адрес: ${newUrl}`, 'info', 3000);
+                                 setTimeout(() => window.location.href = newUrl, 2000);
                             } else {
-                                // Просто перезагружаем, чтобы обновить все данные
-                                window.location.reload();
+                                 window.location.reload();
                             }
                         } else {
-                             // Сервер ответил, но с другой ошибкой, пробуем еще раз
                             checkConnection(attempts + 1);
                         }
                     } catch (error) {
-                        // Ошибка fetch, значит сервер еще не поднялся. Пробуем снова.
                         checkConnection(attempts + 1);
                     }
-                }, 2000); // Проверяем каждые 2 секунды
+                }, 2000);
             }
 
             try {
-                await authedFetch('/api/deployer/settings', {
+                // Теперь мы ОЖИДАЕМ успешный ответ от сервера
+                const response = await authedFetch('/api/deployer/settings', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ domain, ssl_certificate_name })
                 });
-                // Если мы сюда попали, значит сервер ответил ДО перезагрузки. Это маловероятно, но возможно.
-                showToast('Команда отправлена. Начинаем проверку соединения.', 'info');
+
+                const result = await response.json();
+                if (!response.ok) {
+                     // Если сервер вернул ошибку ДО перезагрузки (например, не смог записать файл)
+                    throw new Error(result.detail || "Server returned an error.");
+                }
+
+                // УСПЕХ! Сервер принял команду и ответил.
+                showToast('Команда принята. Nginx перезагружается в фоновом режиме. Проверяем восстановление соединения...', 'info', 10000);
+
+                // Теперь, после успешного ответа, запускаем проверку
                 checkConnection();
 
             } catch (error) {
-                // ЭТО КЛЮЧЕВАЯ ЧАСТЬ!
-                // Мы ожидаем ошибку 'Failed to fetch', так как Nginx останавливается.
-                if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
-                    showToast('Nginx перезагружается. Проверяем восстановление соединения...', 'info', 10000);
-                    // Запускаем проверку соединения, так как это ожидаемое поведение
-                    checkConnection();
-                } else {
-                    // Если ошибка другая, значит что-то пошло не так ДО перезагрузки
-                    showToast(`Произошла неожиданная ошибка: ${error.message}`, 'error');
-                    button.disabled = false;
-                    button.textContent = 'Применить и перезагрузить Nginx';
-                }
+                // Сюда мы попадем только если была реальная ошибка (не 'Failed to fetch')
+                showToast(`Произошла ошибка: ${error.message}`, 'error');
+                button.disabled = false;
+                button.textContent = 'Применить и перезагрузить Nginx';
             }
+            // --- КОНЕЦ ИЗМЕНЕНИЯ ---
         });
 
         function closeSettingsModal() {

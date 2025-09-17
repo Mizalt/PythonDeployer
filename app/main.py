@@ -20,7 +20,7 @@ import httpx
 from fastapi.responses import StreamingResponse
 from fastapi import (
     Depends, FastAPI, File, UploadFile, Form, HTTPException, Query,
-    WebSocket, WebSocketDisconnect, Request, Response
+    WebSocket, WebSocketDisconnect, Request, Response, BackgroundTasks
 )
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -1446,19 +1446,26 @@ server {{
 @app.post("/api/deployer/settings")
 async def update_deployer_settings(
         settings: DeployerSettingsUpdate,
+        background_tasks: BackgroundTasks,
         current_user: Annotated[User, Depends(get_current_active_user)]
 ):
-    """Обновляет настройки доступа к самому Deployer'у."""
+    """
+    Обновляет настройки доступа к самому Deployer'у.
+    Перезагрузка Nginx выполняется в фоновом режиме ПОСЛЕ отправки ответа.
+    """
     try:
+        # 1. Обновляем конфиг (это быстрая операция)
         _update_deployer_nginx_config(settings.domain, settings.ssl_certificate_name)
 
-        # Перезагружаем Nginx, чтобы применить изменения
-        code, out, err = run_command_sync(NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
-        if code != 0:
-            raise HTTPException(status_code=500, detail=f"Failed to reload Nginx: {err or out}")
+        # 2. Добавляем ДОЛГУЮ и ОПАСНУЮ команду в фоновые задачи
+        # Она выполнится ПОСЛЕ того, как мы отправим ответ клиенту.
+        background_tasks.add_task(run_command_sync, NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
 
-        return {"message": "Deployer settings updated successfully. Nginx has been reloaded."}
+        # 3. Немедленно возвращаем ответ, не дожидаясь перезагрузки
+        return {"message": "Settings update command accepted. Nginx will be reloaded in the background."}
+
     except Exception as e:
+        # Если ошибка произошла на этапе записи конфига
         raise HTTPException(status_code=500, detail=str(e))
 
 

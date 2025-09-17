@@ -31,7 +31,7 @@ NGINX_LOCATIONS_DIR = DATA_DIR / "nginx-locations"
 NGINX_LOCATIONS_DIR.mkdir(exist_ok=True)
 
 # ИЗМЕНЕНО: Команда для перезагрузки Nginx теперь использует новую переменную
-NGINX_RELOAD_CMD = "net stop nginx && net start nginx"
+NGINX_RELOAD_CMD = "net stop nginx & timeout /t 3 /nobreak > NUL & net start nginx"
 
 # --- Настройки NSSM ---
 NSSM_PATH = "C:\\ProgramData\\chocolatey\\bin\\nssm.exe"

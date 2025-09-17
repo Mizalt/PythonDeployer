@@ -393,7 +393,7 @@ try {
 
     Write-Host "Installing service '$DeployerServiceName'..." -ForegroundColor Yellow
     & "$NssmExe" install "$DeployerServiceName" "$DeployerPythonExecutable"
-    & "$NssmExe" set "$DeployerServiceName" AppParameters "-m uvicorn app.main:app --host 127.0.0.1 --port $DeployerHttpPort" # If you have a logging.ini, consider adding: --log-config $(Join-Path $InstallPath 'logging.ini')"
+    & "$NssmExe" set "$DeployerServiceName" AppParameters "-m uvicorn app.main:app --host 127.0.0.1 --port $DeployerHttpPort --loop uvloop" # If you have a logging.ini, consider adding: --log-config $(Join-Path $InstallPath 'logging.ini')"
     & "$NssmExe" set "$DeployerServiceName" AppDirectory "$InstallPath"
     & "$NssmExe" set "$DeployerServiceName" AppStdout "$DataDir\deployer_service.log"
     & "$NssmExe" set "$DeployerServiceName" AppStderr "$DataDir\deployer_service.log"
@@ -406,7 +406,7 @@ try {
     Write-Host "Python Deployer successfully installed and started as a Windows service!" -ForegroundColor Green
 } catch {
     Write-Host "Error installing/starting Deployer service: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "You can try to start Deployer manually: '$DeployerPythonExecutable' -m uvicorn app.main:app --host 127.0.0.1 --port $DeployerHttpPort" -ForegroundColor Red
+    Write-Host "You can try to start Deployer manually: '$DeployerPythonExecutable' -m uvicorn app.main:app --host 127.0.0.1 --port $DeployerHttpPort --loop uvloop" -ForegroundColor Red
     Exit 1
 }
 
