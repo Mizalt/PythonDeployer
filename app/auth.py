@@ -1,4 +1,4 @@
-# auth.py (ПОЛНОСТЬЮ ОБНОВЛЕННАЯ ВЕРСИЯ)
+# auth.py
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict
@@ -64,7 +64,7 @@ async def get_token(
         detail="Not authenticated",
     )
 
-# --- НОВАЯ Зависимость для получения токена (опциональная версия) ---
+# --- Зависимость для получения токена (опциональная версия) ---
 
 async def get_optional_token(
     request: Request,
@@ -83,7 +83,7 @@ async def get_optional_token(
     return None
 
 
-# --- Основная зависимость для защиты API-эндпоинтов (не изменилась) ---
+# --- Основная зависимость для защиты API-эндпоинтов ---
 
 async def get_current_active_user(token: str = Depends(get_token)) -> User:
     """
@@ -113,7 +113,7 @@ async def get_current_active_user(token: str = Depends(get_token)) -> User:
     return User(username=user.username, disabled=user.disabled)
 
 
-# --- Зависимость для UI-страниц (ИЗМЕНЕНА) ---
+# --- Зависимость для UI-страниц ---
 
 async def get_optional_current_user(token: Optional[str] = Depends(get_optional_token)) -> Optional[User]:
     """

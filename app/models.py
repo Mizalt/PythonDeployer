@@ -71,12 +71,12 @@ class NginxConfigList(BaseModel):
     files: List[str]
 
 
-# --- НОВЫЕ МОДЕЛИ для SSL ---
+# --- МОДЕЛИ для SSL ---
 class SSLCertificateFile(BaseModel):
     name: str
 
 
-# --- Модели для Пользователей и Аутентификации (ПЕРЕНЕСЕНЫ СЮДА) ---
+# --- Модели для Пользователей и Аутентификации ---
 
 class User(BaseModel):
     username: str

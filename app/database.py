@@ -15,7 +15,6 @@ def load_db() -> Dict[str, App]:
 def save_db(db: Dict[str, App]):
     """Сохраняет базу данных приложений в JSON-файл."""
     DB_FILE.parent.mkdir(parents=True, exist_ok=True)
-    # Pydantic-объекты нужно преобразовать в словари для JSON
     data_to_save = {app_name: app.dict() for app_name, app in db.items()}
     with open(DB_FILE, 'w') as f:
         json.dump(data_to_save, f, indent=4)

@@ -42,13 +42,13 @@ def init_db():
             conn.commit()
             print("INFO: Column 'ssl_certificate_name' added to 'apps' table.")
         except sqlite3.OperationalError: pass # Колонка уже существует
-        try:  # <-- ДОБАВЬТЕ ЭТОТ БЛОК
+        try:
             cursor.execute("ALTER TABLE apps ADD COLUMN parent_domain TEXT")
             conn.commit()
             print("INFO: Column 'parent_domain' added to 'apps' table.")
         except sqlite3.OperationalError:
             pass  # Колонка уже существует
-        try:  # <-- ДОБАВЬТЕ ЭТОТ БЛОК
+        try:
             cursor.execute("ALTER TABLE apps ADD COLUMN app_type TEXT NOT NULL DEFAULT 'python_app'")
             conn.commit()
             print("INFO: Column 'app_type' added to 'apps' table.")

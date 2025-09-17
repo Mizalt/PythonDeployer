@@ -2,7 +2,7 @@
 import subprocess
 import socket
 import logging
-import asyncio # Добавлено для асинхронных операций
+import asyncio
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -43,7 +43,7 @@ async def run_command_async(command: str, cwd: str = None):
         while True:
             line = await stream.readline()
             if line:
-                # --- ИЗМЕНЕНИЕ: Используем надежную функцию декодирования ---
+                # --- Используем функцию декодирования ---
                 decoded_line = decode_windows_output(line)
                 yield f"[{stream_name}] {decoded_line}"
             else:
@@ -65,21 +65,20 @@ async def run_command_async(command: str, cwd: str = None):
         raise subprocess.CalledProcessError(process.returncode, command)
 
 
-# ИЗМЕНЕНИЕ ЗДЕСЬ: Добавим аргумент timeout
 def run_command_sync(command: str, cwd: str = None, timeout: int = 30) -> tuple[int, str, str]:
     """
     СИНХРОННО выполняет команду в оболочке и возвращает кортеж
     (код возврата, stdout, stderr), корректно декодируя вывод Windows.
     Добавлен аргумент timeout для ограничения времени выполнения.
     """
-    logging.info(f"Executing command: '{command}' in '{cwd or 'default dir'}' with timeout {timeout}s") # Обновлено сообщение
+    logging.info(f"Executing command: '{command}' in '{cwd or 'default dir'}' with timeout {timeout}s")
     try:
         process = subprocess.run(
             command,
             shell=True,
             capture_output=True,
             cwd=cwd,
-            timeout=timeout # Используем переданный таймаут
+            timeout=timeout
         )
 
         stdout_str = decode_windows_output(process.stdout)
@@ -95,7 +94,7 @@ def run_command_sync(command: str, cwd: str = None, timeout: int = 30) -> tuple[
         return process.returncode, stdout_str, stderr_str
 
     except subprocess.TimeoutExpired:
-        logging.error(f"Command '{command}' timed out after {timeout} seconds.") # Обновлено сообщение
+        logging.error(f"Command '{command}' timed out after {timeout} seconds.")
         return -1, "", "Command timed out."
     except Exception as e:
         logging.error(f"Failed to execute command '{command}': {e}")

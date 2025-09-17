@@ -12,7 +12,7 @@ APPS_BASE_DIR = DATA_DIR / "apps"
 BACKUPS_DIR = DATA_DIR / "backups"
 # Путь к файлу базы данных SQLite
 DB_FILE = DATA_DIR / "deployer.db"
-# --- НОВОЕ: Директория для SSL-сертификатов ---
+# --- Директория для SSL-сертификатов ---
 SSL_DIR = DATA_DIR / "ssl"
 SSL_DIR.mkdir(exist_ok=True)
 
@@ -22,15 +22,12 @@ NGINX_DIR = Path("C:\\tools\\nginx-1.29.1")
 
 # Путь к ОСНОВНОМУ файлу конфигурации Nginx
 NGINX_MAIN_CONF_FILE = NGINX_DIR / "conf" / "nginx.conf"
-# !!! ВАЖНО: Директория для АВТОМАТИЧЕСКИ создаваемых конфигов
-# Убедитесь, что в nginx.conf есть строка: include C:/deployer-data/nginx-sites/*.conf;
 NGINX_SITES_DIR = DATA_DIR / "nginx-sites"
 NGINX_SITES_DIR.mkdir(exist_ok=True)
-# --- НОВАЯ КОНСТАНТА ---
 NGINX_LOCATIONS_DIR = DATA_DIR / "nginx-locations"
 NGINX_LOCATIONS_DIR.mkdir(exist_ok=True)
 
-# ИЗМЕНЕНО: Команда для перезагрузки Nginx теперь использует новую переменную
+# Команда для перезагрузки Nginx
 NGINX_RELOAD_CMD = "net stop nginx & timeout /t 3 /nobreak > NUL & net start nginx"
 
 # --- Настройки NSSM ---
@@ -45,8 +42,8 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 120 # Увеличим время жизни токена
 
 # --- Управление версиями Python ---
-# Укажите пути к исполняемым файлам разных версий Python на вашем сервере.
-# Это позволит пользователям выбирать версию при деплое.
+# Пути к исполняемым файлам разных версий Python на сервере.
+# Это позволяет пользователям выбирать версию при деплое.
 PYTHON_EXECUTABLES = {
     "Python 3.12 (System)": "C:\\Python312\\python.exe",
 }

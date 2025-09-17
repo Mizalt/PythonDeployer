@@ -35,7 +35,6 @@ from .config import (
     PYTHON_EXECUTABLES, DEFAULT_PYTHON_EXECUTABLE, NGINX_SITES_DIR,
     NGINX_DIR, SSL_DIR, NGINX_LOCATIONS_DIR
 )
-# Используем новую базу данных SQLite
 from .database_sqlite import (
     init_db, get_all_apps, get_app_by_name, add_or_update_app, delete_app,
     get_user_by_username
@@ -53,7 +52,7 @@ from starlette.responses import RedirectResponse
 # Инициализация приложения и шаблонов
 app = FastAPI(title="Python Deployer API")
 # Указываем Jinja2, где искать шаблоны. Важно, чтобы это было относительно папки, откуда запускается uvicorn.
-templates = Jinja2Templates(directory="templates")  # Предполагаем, что HTML-файлы лежат в корне или доступны FastAPI.
+templates = Jinja2Templates(directory="templates")
 
 # Инициализация БД (создание таблиц) при старте приложения
 init_db()
@@ -67,7 +66,6 @@ class ConnectionManager:
 
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
-        # НОВИНКА: Словарь для ожидания подключения клиента
         self.client_ready_events: Dict[str, asyncio.Event] = {}
 
     def register_task(self, task_id: str) -> asyncio.Event:
@@ -286,7 +284,7 @@ async def read_index(request: Request, current_user: Optional[User] = Depends(ge
     return templates.TemplateResponse("index.html", {
         "request": request,
         "python_versions": PYTHON_EXECUTABLES,
-        "default_python_executable": DEFAULT_PYTHON_EXECUTABLE,  # Добавлено
+        "default_python_executable": DEFAULT_PYTHON_EXECUTABLE,
         "current_user": current_user
     })
 
@@ -345,7 +343,7 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
         return  # Прерываем деплой
 
     try:
-        # --- НОВЫЙ БЛОК: ПРОВЕРКА И УДАЛЕНИЕ "МЕРТВОЙ" СЛУЖБЫ ---
+        # --- УДАЛЕНИЕ "МЕРТВОЙ" СЛУЖБЫ ---
         await manager.send_message(f"=== Проверка на наличие существующей службы '{name}'... ===", task_id)
 
         # Вспомогательная функция для запуска синхронной команды в потоке
@@ -360,7 +358,7 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
             await manager.send_message(f"[INFO] Обнаружена и удалена существующая служба '{name}'.", task_id)
         else:
             await manager.send_message("[INFO] Существующая служба не найдена, продолжаем.", task_id)
-        # --- КОНЕЦ НОВОГО БЛОКА ---
+
 
         await asyncio.sleep(1.5)
         await manager.send_message(f"=== Начало развертывания приложения '{name}' (ID задачи: {task_id}) ===", task_id)
@@ -481,7 +479,7 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
 
         # Сохранение в БД
         new_app = App(
-            app_type="python_app",  # <-- РЕКОМЕНДАЦИЯ: Явно указываем тип приложения
+            app_type="python_app",
             name=name, port=app_data.port, app_path=str(app_path), log_path=str(log_file_path),
             start_script=final_start_script,
             status=final_status, python_executable=python_executable, nginx_proxy_target=app_data.nginx_proxy_target,
@@ -668,7 +666,7 @@ def _redeploy_from_zip(app_info: App, zip_path: Path):
             raise Exception(f"Failed to install dependencies: {err}. Please check logs.")
 
 
-# --- НОВАЯ HELPER-ФУНКЦИЯ для управления конфигом Nginx ---
+# --- HELPER-ФУНКЦИЯ для управления конфигом Nginx ---
 def _update_nginx_config_for_app(
         app_name: str,
         nginx_proxy_target: Optional[str],
@@ -709,10 +707,9 @@ def _update_nginx_config_for_app(
 
         path_prefix = nginx_proxy_target.rstrip('/')
 
-        # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+
         location_content = ""
         if app_type == "static_site":
-            # --- ИСПОЛЬЗУЕМ БОЛЕЕ НАДЕЖНЫЙ 'root' ВМЕСТО 'alias' ---
             # root указывает на родительскую папку 'apps', а Nginx сам достраивает путь из URI.
             apps_root_dir = APPS_BASE_DIR.as_posix()
 
@@ -961,7 +958,6 @@ async def deploy_app(
     else:
         asyncio.create_task(perform_deployment(task_id, app_data, backup_zip_path))
 
-    # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
     # Этот return должен быть на том же уровне, что и if/else, чтобы выполняться для обоих случаев.
     return JSONResponse(status_code=202, content={"message": "Deployment process started", "task_id": task_id})
 
@@ -1018,7 +1014,7 @@ async def update_app_config(
         add_or_update_app(app_info)
         return {"message": f"Configuration for static site '{app_name}' updated successfully."}
 
-    # --- Логика для Python-приложения (существующий код с улучшениями) ---
+    # --- Логика для Python-приложения ---
     if config.port != app_info.port:
         apps = get_all_apps()
         existing_ports = {app.port for app in apps if app.name != app_name and app.port is not None}
@@ -1078,7 +1074,7 @@ async def update_app_config(
         raise HTTPException(status_code=500, detail=f"Failed to update configuration: {str(e)}")
 
 
-# --- НОВЫЕ ЭНДПОИНТЫ ДЛЯ УПРАВЛЕНИЯ SSL ---
+# --- ЭНДПОИНТЫ ДЛЯ УПРАВЛЕНИЯ SSL ---
 
 @app.get("/api/ssl/certificates", response_model=List[SSLCertificateFile])
 async def list_ssl_certificates(current_user: Annotated[User, Depends(get_current_active_user)]):
@@ -1217,7 +1213,6 @@ def delete_app_api(app_name: str, background_tasks: BackgroundTasks, current_use
         if backup_dir.exists():
             shutil.rmtree(backup_dir)
 
-        # --- НАЧАЛО ИСПРАВЛЕНИЙ ---
         # 5. Умное удаление конфига Nginx
         config_deleted = False
         # Если это домен, удаляем файл из nginx-sites и папку из nginx-locations
@@ -1240,9 +1235,8 @@ def delete_app_api(app_name: str, background_tasks: BackgroundTasks, current_use
                 config_deleted = True
 
         if config_deleted:
-            # --- ИСПРАВЛЕНИЕ: Перезагружаем Nginx в фоне ПОСЛЕ отправки ответа ---
+            # --- Перезагружаем Nginx в фоне ПОСЛЕ отправки ответа ---
             background_tasks.add_task(run_command_sync, NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
-            # --- КОНЕЦ ИСПРАВЛЕНИЙ ---
 
             # 6. Удалить из БД
         delete_app(app_name)
@@ -1394,13 +1388,13 @@ def validate_nginx_path(target_path: Path, for_delete: bool = False):
         abs_target_str = str(target_path.absolute())
         abs_main_conf_str = str(NGINX_MAIN_CONF_FILE.absolute())
         abs_sites_dir_str = str(NGINX_SITES_DIR.absolute())
-        abs_locations_dir_str = str(NGINX_LOCATIONS_DIR.absolute()) # <-- НОВАЯ СТРОКА
+        abs_locations_dir_str = str(NGINX_LOCATIONS_DIR.absolute())
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid path format.")
 
     is_main_conf = (abs_target_str.lower() == abs_main_conf_str.lower())
     is_sites_conf = abs_target_str.lower().startswith(abs_sites_dir_str.lower())
-    is_locations_conf = abs_target_str.lower().startswith(abs_locations_dir_str.lower()) # <-- НОВАЯ СТРОКА
+    is_locations_conf = abs_target_str.lower().startswith(abs_locations_dir_str.lower())
 
     # ЗАЩИТА: Запрещаем удалять главный nginx.conf
     if for_delete and is_main_conf:
@@ -1447,7 +1441,7 @@ async def list_nginx_configs(current_user: Annotated[User, Depends(get_current_a
 
     # 3. Сканируем папку с конфигами путей (location блоки)
     if NGINX_LOCATIONS_DIR.exists():
-        for p in sorted(NGINX_LOCATIONS_DIR.glob("**/*.conf")):  # <--- ПРАВИЛЬНО
+        for p in sorted(NGINX_LOCATIONS_DIR.glob("**/*.conf")):
             add_file(str(p))
 
     return NginxConfigList(files=files)
@@ -1582,7 +1576,7 @@ server {{
         proxy_read_timeout 86400;
     }}"""
 
-    # ИСПРАВЛЕНИЕ ЗДЕСЬ: Уточняем путь для include, чтобы он был специфичен для текущего домена
+    # Уточняем путь для include, чтобы он был специфичен для текущего домена
     include_line_for_apps = f"    include {(NGINX_LOCATIONS_DIR / domain).as_posix()}/*.conf;"
 
     # Проверяем, есть ли валидный SSL сертификат
