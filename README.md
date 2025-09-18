@@ -47,7 +47,7 @@ Python Deployer — это комплексное решение, которое
 2.  **Выполните следующую команду**, чтобы скачать скрипт:
 
     ```powershell
-    Invoke-WebRequest -Uri "https://gist.githubusercontent.com/Mizalt/c7f24708cc8594faaf102ed4151b9b8b/raw/72e716f7702b9bf896a379f85d404ba174ca63eb/install_deployer.ps1" -OutFile "C:\install_deployer.ps1"
+    Invoke-WebRequest -Uri "https://gist.githubusercontent.com/Mizalt/c7f24708cc8594faaf102ed4151b9b8b/raw/629c9cbf0f85a98970a7c4290d661cda710482ae/install_deployer.ps1" -OutFile "C:\install_deployer.ps1"
     ```
 3.  **Pапустить установочный скрипт:
     ```powershell
