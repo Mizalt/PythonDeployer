@@ -382,6 +382,68 @@
             grid-column: 1 / -1; /* Занимает всю ширину */
             display: contents;   /* "Растворяет" div, чтобы его дочерние элементы встроились в grid */
         }
+                /* Общие стили для списка сертификатов */
+        .ssl-cert-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); /* 3-4 элемента в ряд */
+            gap: 1rem; /* Отступ между элементами */
+            margin-bottom: 1rem;
+        }
+
+        .ssl-cert-grid .cert-item {
+            background-color: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            transition: all 0.2s ease-in-out;
+        }
+
+        .ssl-cert-grid .cert-item:hover {
+            border-color: #007bff;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+        }
+
+        .ssl-cert-grid .cert-info {
+            flex-grow: 1;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.1em;
+            color: #333;
+            font-weight: 500;
+        }
+
+        .ssl-cert-grid .cert-info i {
+            color: #28a745; /* Зеленый цвет для иконки замка */
+            font-size: 1.2em;
+        }
+
+        /* Стили для кнопки удаления в списке SSL */
+        .ssl-cert-grid .cert-controls button.delete-icon {
+            background-color: #f0f0f0; /* Более нейтральный фон */
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            cursor: pointer;
+            padding: 0.5rem; /* Увеличим для лучшего нажатия */
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            width: 38px;
+            height: 38px;
+            font-size: 1.2em;
+            color: #dc3545; /* Красный цвет значка */
+            border-color: #dc3545; /* Красная обводка */
+        }
+        .ssl-cert-grid .cert-controls button.delete-icon:hover {
+            background-color: #dc3545; /* Фон краснеет при наведении */
+            color: white; /* Иконка становится белой */
+        }
     </style>
 
 </head>
@@ -512,7 +574,7 @@
             <h2>Управление SSL Сертификатами</h2>
             <div id="ssl-cert-list-container">
                 <div id="ssl-loader" class="loader">Загрузка сертификатов...</div>
-                <div id="ssl-cert-list"></div>
+                <div id="ssl-cert-list" class="ssl-cert-grid"></div>
             </div>
             <hr style="border-top: 1px solid #eee; margin: 1.5rem 0;">
             <h3>Загрузить новый сертификат</h3>
@@ -1723,20 +1785,23 @@
 
         async function populateSSLCertList() {
             sslLoader.classList.remove('hidden');
-            sslCertList.innerHTML = '';
+            sslCertList.innerHTML = ''; // Очищаем grid
             try {
                 const response = await authedFetch('/api/ssl/certificates');
                 if (!response.ok) throw new Error('Failed to load certificates');
                 const certs = await response.json();
 
                 if (certs.length === 0) {
-                    sslCertList.innerHTML = '<p style="text-align:center; color:#666;">Нет загруженных сертификатов.</p>';
+                    sslCertList.innerHTML = '<p style="text-align:center; color:#666; grid-column: 1 / -1;">Нет загруженных сертификатов.</p>';
                 } else {
                     const listHtml = certs.map(cert => `
-                        <div class="app">
-                            <div class="app-info"><strong><i class="fas fa-shield-alt"></i> ${cert.name}</strong></div>
-                            <div class="app-controls">
-                                <button data-action="delete-ssl" data-name="${cert.name}" class="delete-icon"><i class="fas fa-trash-alt"></i><span class="tooltip-text">Удалить</span></button>
+                        <div class="cert-item">
+                            <div class="cert-info">
+                                <i class="fas fa-shield-alt"></i>
+                                <strong>${cert.name}</strong>
+                            </div>
+                            <div class="cert-controls">
+                                <button data-action="delete-ssl" data-name="${cert.name}" class="delete-icon"><i class="fas fa-trash-alt"></i><span class="tooltip-text"></span></button>
                             </div>
                         </div>
                     `).join('');
@@ -1747,7 +1812,7 @@
                 await populateSSLDropdowns();
 
             } catch (error) {
-                sslCertList.innerHTML = `<p style="text-align:center; color:red;">${error.message}</p>`;
+                sslCertList.innerHTML = `<p style="text-align:center; color:red; grid-column: 1 / -1;">${error.message}</p>`;
             } finally {
                 sslLoader.classList.add('hidden');
             }
