@@ -422,8 +422,12 @@
                         <button type="button" class="info-button" id="start-script-info-button">
                             <i class="fas fa-info-circle"></i>
                             <span class="tooltip-text">
-                                Укажите файл (например, <strong>main.py</strong>) или полную команду (например, <strong>-m uvicorn main:app</strong>).<br>
-                                <strong>Доступ:</strong> Через кнопку "Просмотр" или Nginx.
+                                Укажите файл (например, <strong>main.py</strong>) или полную команду (например, <strong>-m uvicorn main:app</strong>).<br><br>
+                                <strong>Важно:</strong>
+                                <ul>
+                                   <li>Если используете <strong>uvicorn</strong>, Deployer автоматически подставит нужный порт.</li>
+                                   <li>Если запускаете через <strong>main.py</strong>, ваш скрипт должен брать порт из переменной окружения: <code>port=os.getenv('PORT')</code>.</li>
+                                </ul>
                             </span>
                         </button>
                     </div>
@@ -432,7 +436,15 @@
                 <!-- Группа "Порт" (только для Python) -->
                 <div class="form-group python-only">
                     <label for="port">Порт приложения:</label>
-                    <input type="number" id="port" name="port" placeholder="Авто (например, 8001)">
+                    <div class="input-with-tooltip">
+                        <input type="number" id="port" name="port" placeholder="Авто (например, 8001)">
+                        <button type="button" class="info-button" id="port-info-button">
+                            <i class="fas fa-info-circle"></i>
+                            <span class="tooltip-text">
+                                Оставьте поле пустым для автоматического назначения порта. Deployer передаст назначенный порт в ваше приложение через переменную окружения <strong>%PORT%</strong>.
+                            </span>
+                        </button>
+                    </div>
                 </div>
 
                 <!-- Группа "Версия Python" (только для Python) -->
@@ -516,6 +528,18 @@
 
                 <div></div> <!-- Пустая ячейка для выравнивания кнопки -->
                 <button type="submit">Загрузить сертификат</button>
+            </form>
+            <hr style="border-top: 1px solid #eee; margin: 1.5rem 0;">
+            <h3>Выпустить новый сертификат (Let's Encrypt)</h3>
+            <p style="color: #666; font-size: 0.9em; margin-top: -0.5rem; margin-bottom: 1rem;">
+                <strong>Важно:</strong> Перед запуском убедитесь, что DNS A-запись для вашего домена указывает на IP-адрес этого сервера, и порт 80 открыт и доступен извне.
+            </p>
+            <form id="ssl-issue-form">
+                <label for="ssl-issue-domain">Домен:</label>
+                <input type="text" id="ssl-issue-domain" required placeholder="app.example.com">
+
+                <div></div> <!-- Пустая ячейка для выравнивания кнопки -->
+                <button type="submit">Выпустить сертификат</button>
             </form>
         </div>
         <div class="card">
@@ -650,6 +674,8 @@
 </div>
 
 <script>
+
+
     let currentAppsData = {};
 
     // --- Toast Notification Function ---
@@ -943,12 +969,7 @@
             const domain = document.getElementById('deployer-domain').value.trim() || null;
             const ssl_certificate_name = deployerSslSelect.value || null;
 
-            if (ssl_certificate_name && !domain) {
-                showToast('Нельзя выбрать SSL сертификат без указания домена.', 'error');
-                return;
-            }
-
-            if (!(await customConfirm('Это действие перезапишет основной конфиг Nginx для Deployer и перезагрузит его. Панель станет временно недоступной. Продолжить?', 'Подтверждение'))) {
+            if (!(await customConfirm('Это действие перезапишет конфиг Nginx для Deployer и перезагрузит его. Панель может стать временно недоступной. Продолжить?', 'Подтверждение'))) {
                 return;
             }
 
@@ -956,47 +977,49 @@
             button.disabled = true;
             button.textContent = 'Применение...';
 
-            // --- НАЧАЛО ИЗМЕНЕНИЯ: Адаптация под BackgroundTasks ---
+            // --- ОБНОВЛЕННАЯ ФУНКЦИЯ ПРОВЕРКИ СОЕДИНЕНИЯ ---
+            function checkConnection(redirectUrl = null) {
+                const maxAttempts = 15;
+                let attempts = 0;
 
-            // Эта функция остаётся такой же, она будет опрашивать сервер
-            function checkConnection(attempts = 0) {
-                const maxAttempts = 15; // Ждем максимум 30 секунд (15 * 2c)
-                if (attempts >= maxAttempts) {
-                    showToast('Не удалось восстановить соединение с сервером после перезагрузки. Пожалуйста, обновите страницу вручную.', 'error', 10000);
-                    button.disabled = false;
-                    button.textContent = 'Применить и перезагрузить Nginx';
-                    return;
-                }
-
-                setTimeout(async () => {
-                    try {
-                        const response = await fetch('/api/apps');
-                        if (response.status === 200 || response.status === 401) {
-                            showToast('Перезагрузка Nginx завершена. Панель снова онлайн!', 'success');
-                            button.disabled = false;
-                            button.textContent = 'Применить и перезагрузить Nginx';
-
-                            const newUrl = `http${ssl_certificate_name ? 's' : ''}://${domain || window.location.hostname}${window.location.port ? ':'+window.location.port : ''}`;
-                            const currentOrigin = window.location.origin;
-
-                            // Сравниваем без учета порта, если он стандартный
-                            if (domain && !currentOrigin.includes(domain)) {
-                                 showToast(`Перенаправление на новый адрес: ${newUrl}`, 'info', 3000);
-                                 setTimeout(() => window.location.href = newUrl, 2000);
-                            } else {
-                                 window.location.reload();
-                            }
-                        } else {
-                            checkConnection(attempts + 1);
-                        }
-                    } catch (error) {
-                        checkConnection(attempts + 1);
+                const attempt = () => {
+                    if (attempts >= maxAttempts) {
+                        showToast('Не удалось восстановить соединение. Обновите страницу вручную.', 'error', 10000);
+                        button.disabled = false;
+                        button.textContent = 'Применить и перезагрузить Nginx';
+                        return;
                     }
-                }, 2000);
+                    attempts++;
+                    setTimeout(async () => {
+                        try {
+                            // Пробуем достучаться до любого API эндпоинта
+                            const response = await fetch('/api/apps');
+                            if (response.status === 200 || response.status === 401) {
+                                // УСПЕХ! Сервер снова онлайн.
+                                showToast('Перезагрузка Nginx завершена. Панель снова онлайн!', 'success');
+
+                                // Теперь выполняем редирект или перезагрузку
+                                if (redirectUrl) {
+                                    showToast(`Перенаправление на новый адрес: ${redirectUrl}`, 'info', 4000);
+                                    setTimeout(() => { window.location.href = redirectUrl; }, 1500);
+                                } else {
+                                    // Если URL не изменился, просто перезагружаем страницу
+                                    window.location.reload();
+                                }
+                            } else {
+                                // Сервер ответил, но не так, как мы ожидали. Пробуем еще.
+                                attempt();
+                            }
+                        } catch (error) {
+                            // 'Failed to fetch' - это ожидаемая ошибка, когда Nginx лежит. Пробуем еще.
+                            attempt();
+                        }
+                    }, 2000);
+                };
+                attempt();
             }
 
             try {
-                // Теперь мы ОЖИДАЕМ успешный ответ от сервера
                 const response = await authedFetch('/api/deployer/settings', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -1005,23 +1028,19 @@
 
                 const result = await response.json();
                 if (!response.ok) {
-                     // Если сервер вернул ошибку ДО перезагрузки (например, не смог записать файл)
                     throw new Error(result.detail || "Server returned an error.");
                 }
 
-                // УСПЕХ! Сервер принял команду и ответил.
-                showToast('Команда принята. Nginx перезагружается в фоновом режиме. Проверяем восстановление соединения...', 'info', 10000);
+                showToast('Команда принята. Nginx перезагружается. Проверяем восстановление соединения...', 'info', 10000);
 
-                // Теперь, после успешного ответа, запускаем проверку
-                checkConnection();
+                // Запускаем проверку соединения, передавая ей URL для редиректа (может быть null)
+                checkConnection(result.redirect_url);
 
             } catch (error) {
-                // Сюда мы попадем только если была реальная ошибка (не 'Failed to fetch')
                 showToast(`Произошла ошибка: ${error.message}`, 'error');
                 button.disabled = false;
                 button.textContent = 'Применить и перезагрузить Nginx';
             }
-            // --- КОНЕЦ ИЗМЕНЕНИЯ ---
         });
 
         function closeSettingsModal() {
@@ -1272,9 +1291,12 @@
             socket.onmessage = (event) => {
                 if (event.data === "CLOSE_CONNECTION") {
                     logOutput.textContent += '\n--- Процесс завершен. ---';
-                    showToast('Развертывание завершено, обновляю список...', 'success');
+                    showToast('Процесс завершен, обновляю интерфейс...', 'success');
+                    // Обновляем и приложения, и список SSL-сертификатов
                     fetchApps();
-                    socket.close(); return;
+                    populateSSLCertList();
+                    socket.close();
+                    return;
                 }
                 logOutput.textContent += event.data + '\n';
                 logOutput.scrollTop = logOutput.scrollHeight;
@@ -1654,7 +1676,16 @@
                 }
             });
         }
-
+        // Обработчик для кнопки-подсказки "Порт приложения"
+        const portInfoButton = document.getElementById('port-info-button');
+        if (portInfoButton) {
+            const tooltip = portInfoButton.querySelector('.tooltip-text');
+            portInfoButton.addEventListener('click', (event) => {
+                event.stopPropagation();
+                tooltip.classList.toggle('visible');
+            });
+            // Глобальный обработчик клика по документу уже есть, он закроет и эту подсказку.
+        }
         // Обработчик для кнопки-подсказки "Путь или Домен (Nginx)" в форме развертывания
         const deployPathDomainInfoButton = document.getElementById('deploy-path-domain-info-button');
         if (deployPathDomainInfoButton) {
@@ -1783,6 +1814,52 @@
                 showToast(`Ошибка загрузки: ${error.message}`, 'error');
             } finally {
                 button.disabled = false; button.textContent = 'Загрузить сертификат';
+            }
+        });
+
+
+        const sslIssueForm = document.getElementById('ssl-issue-form');
+
+        sslIssueForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const domainInput = document.getElementById('ssl-issue-domain');
+            const domain = domainInput.value.trim();
+
+            if (!domain) {
+                showToast('Пожалуйста, введите имя домена.', 'warning');
+                return;
+            }
+
+            if (!(await customConfirm(`Вы уверены, что хотите выпустить SSL-сертификат для домена '${domain}'? Процесс может занять несколько минут.`, 'Подтверждение выпуска SSL'))) {
+                return;
+            }
+
+            const button = sslIssueForm.querySelector('button');
+            button.disabled = true;
+            button.textContent = 'Выпускается...';
+
+            try {
+                const response = await authedFetch('/api/ssl/issue', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ domain })
+                });
+
+                const result = await response.json();
+                if (!response.ok) {
+                    throw new Error(result.detail || 'Произошла ошибка на сервере.');
+                }
+
+                // --- КЛЮЧЕВОЕ ИЗМЕНЕНИЕ ---
+                // Используем существующую функцию для отображения логов
+                showLogModalAndConnect(result.task_id);
+                sslIssueForm.reset();
+
+            } catch (error) {
+                showToast(`Ошибка запуска: ${error.message}`, 'error');
+            } finally {
+                button.disabled = false;
+                button.textContent = 'Выпустить сертификат';
             }
         });
 

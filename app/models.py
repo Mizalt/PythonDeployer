@@ -75,6 +75,9 @@ class NginxConfigList(BaseModel):
 class SSLCertificateFile(BaseModel):
     name: str
 
+class IssueSSLRequest(BaseModel):
+    domain: str
+
 
 # --- Модели для Пользователей и Аутентификации ---
 

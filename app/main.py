@@ -12,7 +12,8 @@ import uuid
 from pathlib import Path
 from typing import List, Optional, Annotated, Dict
 from datetime import timedelta
-
+import shutil
+import glob
 import os
 import signal
 
@@ -33,7 +34,8 @@ from .config import (
     APPS_BASE_DIR, BACKUPS_DIR, NGINX_MAIN_CONF_FILE, NGINX_RELOAD_CMD,
     NSSM_PATH, BASE_PORT, ACCESS_TOKEN_EXPIRE_MINUTES, DB_FILE,
     PYTHON_EXECUTABLES, DEFAULT_PYTHON_EXECUTABLE, NGINX_SITES_DIR,
-    NGINX_DIR, SSL_DIR, NGINX_LOCATIONS_DIR
+    NGINX_DIR, SSL_DIR, NGINX_LOCATIONS_DIR,
+    WIN_ACME_PATH, ACME_CHALLENGE_DIR
 )
 from .database_sqlite import (
     init_db, get_all_apps, get_app_by_name, add_or_update_app, delete_app,
@@ -42,10 +44,11 @@ from .database_sqlite import (
 from .models import (
     App, AppAction, NginxConfig, DeploymentHistory, RestoreRequest,
     AppLogs, Token, AppCreate, AppConfigUpdate, NginxConfigList,
-    SSLCertificateFile, DeployerSettingsUpdate, DeployerSettings
+    SSLCertificateFile, DeployerSettingsUpdate, DeployerSettings,
+    IssueSSLRequest
 )
 # Добавляем асинхронный и синхронный запуск команд
-from .utils import run_command_sync, find_free_port, run_command_async
+from .utils import run_command_sync, find_free_port, run_command_async, run_command_detached
 from .auth import verify_password, create_access_token, get_current_active_user, get_optional_current_user, User
 from starlette.responses import RedirectResponse
 
@@ -403,13 +406,6 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
         await manager.send_message("[5/7] Настройка службы Windows (NSSM)...", task_id)
         python_in_venv = venv_path / "Scripts" / "python.exe"
 
-        final_start_script = app_data.start_script
-        if 'uvicorn' in final_start_script:
-            # Убеждаемся, что Uvicorn привязан к localhost
-            final_start_script = re.sub(r'\s--host\s+\S+', '', final_start_script)  # Удаляем существующий --host
-            final_start_script += ' --host 127.0.0.1'  # Добавляем принудительно
-            await manager.send_message("[INFO] Обнаружен Uvicorn. Принудительная привязка к 127.0.0.1.", task_id)
-
         async def run_sync_in_thread(command, cwd=None):
             # Вспомогательная функция для запуска синхронной команды в потоке
             return await loop.run_in_executor(None, functools.partial(run_command_sync, command, cwd=cwd))
@@ -417,6 +413,16 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
         code, _, err = await run_sync_in_thread(f'"{NSSM_PATH}" install "{service_name}" "{python_in_venv}"')
         if code != 0: raise Exception(f"NSSM install failed: {err}")
         service_created = True
+
+        final_start_script = app_data.start_script
+        if 'uvicorn' in final_start_script:
+            # Удаляем любые --host и --port, чтобы избежать конфликтов
+            final_start_script = re.sub(r'\s--host\s+\S+', '', final_start_script)
+            final_start_script = re.sub(r'\s--port\s+\S+', '', final_start_script)
+            # Принудительно добавляем хост и ПРАВИЛЬНЫЙ порт, назначенный Deployer'ом
+            final_start_script += f' --host 127.0.0.1 --port {app_data.port}'
+            await manager.send_message(
+                f"[INFO] Команда Uvicorn адаптирована. Финальная команда: ... {final_start_script}", task_id)
 
         code, _, err = await run_sync_in_thread(
             f'"{NSSM_PATH}" set "{service_name}" AppParameters "{final_start_script}"')
@@ -808,6 +814,94 @@ server {{
 """
         site_conf_path.write_text(final_config, encoding="utf-8")
 
+
+async def perform_ssl_issuance(task_id: str, domain: str):
+    """
+    Асинхронно получает SSL-сертификат.
+    НЕ требует перезагрузки Nginx для ACME-проверки.
+    """
+    loop = asyncio.get_running_loop()
+    win_acme_exe = Path(WIN_ACME_PATH)
+    pem_files_path = SSL_DIR / domain
+    webroot_path = ACME_CHALLENGE_DIR
+
+    ready_event = manager.register_task(task_id)
+    try:
+        await asyncio.wait_for(ready_event.wait(), timeout=10.0)
+    except asyncio.TimeoutError:
+        manager.disconnect(task_id)
+        return
+
+    try:
+        await manager.send_message(f"=== Начало выпуска SSL-сертификата для домена: {domain} ===", task_id)
+
+        # Шаги 1-3 (очистка, удаление задания, запуск win-acme)
+        await manager.send_message(f"\n[1/4] Очистка директории для сертификата: {pem_files_path}", task_id)
+        if pem_files_path.exists(): await loop.run_in_executor(None, shutil.rmtree, pem_files_path)
+        await loop.run_in_executor(None, pem_files_path.mkdir, True, True)
+
+        await manager.send_message("\n[2/4] Удаление существующего задания на обновление (если есть)...", task_id)
+
+        # --- НАЧАЛО ИЗМЕНЕНИЙ ---
+        # 1. Убираем --quiet
+        delete_command = f'"{win_acme_exe}" --cancel --id "{domain}"'
+
+        # 2. Оборачиваем вызов в try/except, чтобы программа не падала,
+        # если команда завершится с ошибкой (что нормально, если задания нет).
+        try:
+            async for log_line in run_command_async(delete_command):
+                await manager.send_message(log_line, task_id)
+        except subprocess.CalledProcessError:
+            await manager.send_message(
+                "[INFO] Задание не найдено для удаления или произошла ожидаемая ошибка. Продолжаем...", task_id)
+        # --- КОНЕЦ ИЗМЕНЕНИЙ ---
+
+        await manager.send_message("\n[3/4] Запуск win-acme. Это может занять до 2 минут...", task_id)
+        command = (f'"{win_acme_exe}" --force --verbose --source manual --host {domain} '
+                   f'--validation filesystem --webroot "{webroot_path}" --store pemfiles '
+                   f'--pemfilespath "{pem_files_path}" --csr rsa --accepttos --emailaddress "admin@18zim.ru"')
+        async for log_line in run_command_async(command): await manager.send_message(log_line, task_id)
+
+        await manager.send_message("\n[4/4] Обработка и переименование файлов сертификата...", task_id)
+
+        def process_cert_files():
+            crt_files = list(pem_files_path.glob("*-crt.pem"));
+            chain_files = list(pem_files_path.glob("*-chain.pem"));
+            key_files = list(pem_files_path.glob("*-key.pem"))
+            if not crt_files or not chain_files or not key_files: raise Exception(
+                "Ключевые файлы сертификата не были созданы.")
+            original_crt_path = crt_files[0];
+            original_chain_path = chain_files[0];
+            original_key_path = key_files[0]
+            final_key_path = pem_files_path / "privkey.pem";
+            final_chain_path = pem_files_path / "fullchain.pem"
+            crt_content = original_crt_path.read_text(encoding='utf-8');
+            chain_content = original_chain_path.read_text(encoding='utf-8')
+            with open(final_chain_path, 'w', encoding='utf-8') as f:
+                f.write(crt_content.strip() + '\n' + chain_content.strip() + '\n')
+            os.rename(original_key_path, final_key_path)
+            os.remove(original_crt_path);
+            os.remove(original_chain_path)
+            for f in pem_files_path.glob(f"{domain}*"):
+                if f.is_file(): os.remove(f)
+
+        await loop.run_in_executor(None, process_cert_files)
+        await manager.send_message(" -> Файлы privkey.pem и fullchain.pem успешно созданы.", task_id)
+
+        await manager.send_message("\n=== ПРОЦЕСС ВЫПУСКА SSL УСПЕШНО ЗАВЕРШЕН! ===", task_id)
+        await manager.send_message(
+            f"Сертификат для '{domain}' теперь доступен для выбора при создании или редактировании приложения.",
+            task_id)
+        await manager.send_message("Обновление списка сертификатов в интерфейсе...", task_id)
+
+    except (Exception, subprocess.CalledProcessError) as e:
+        await manager.send_message(f"\n--- !!! КРИТИЧЕСКАЯ ОШИБКА: {e} ---", task_id)
+
+    finally:
+        await asyncio.sleep(2)
+        await manager.send_message("CLOSE_CONNECTION", task_id)
+        manager.disconnect(task_id)
+
 # --- Эндпоинты API для управления приложениями ---
 
 @app.get("/api/apps", response_model=List[App])
@@ -1031,7 +1125,8 @@ async def update_app_config(
         final_start_script = config.start_script
         if 'uvicorn' in final_start_script:
             final_start_script = re.sub(r'\s--host\s+\S+', '', final_start_script)
-            final_start_script += ' --host 127.0.0.1'
+            final_start_script = re.sub(r'\s--port\s+\S+', '', final_start_script)
+            final_start_script += f' --host 127.0.0.1 --port {config.port}'
 
         run_command_sync(f'"{NSSM_PATH}" set "{app_name}" AppParameters "{final_start_script}"')
         env_vars_str = f"PORT={config.port}"
@@ -1145,6 +1240,31 @@ async def delete_ssl_certificate(cert_name: str, current_user: Annotated[User, D
         return {"message": f"Certificate '{cert_name}' deleted successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete certificate: {e}")
+
+@app.post("/api/ssl/issue")
+async def issue_ssl_certificate(
+    request_data: IssueSSLRequest,
+    current_user: Annotated[User, Depends(get_current_active_user)]
+):
+    """
+    Запускает фоновую задачу для получения SSL-сертификата Let's Encrypt для домена.
+    """
+    domain = request_data.domain.strip().lower()
+    win_acme_exe = Path(WIN_ACME_PATH)
+
+    # 1. Валидация
+    if not win_acme_exe.exists():
+        raise HTTPException(status_code=500, detail=f"win-acme.exe не найден по пути: {WIN_ACME_PATH}")
+
+    if not re.match(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$", domain):
+        raise HTTPException(status_code=400, detail="Некорректный формат доменного имени.")
+
+    # 3. Запуск фоновой задачи
+    task_id = str(uuid.uuid4())
+    asyncio.create_task(perform_ssl_issuance(task_id, domain))
+
+    return JSONResponse(status_code=202, content={"message": "SSL issuance process started", "task_id": task_id})
+
 
 @app.post("/api/apps/{app_name}/actions")
 def control_app(app_name: str, payload: AppAction, current_user: Annotated[User, Depends(get_current_active_user)]):
@@ -1531,38 +1651,30 @@ async def reload_nginx(
 
 def _update_deployer_nginx_config(domain: Optional[str], ssl_cert_name: Optional[str]):
     """
-    (HELPER) Создает или обновляет главный конфиг Nginx для самого Deployer'а.
-    Версия 2.1: Исправлена опечатка в TLS протоколе и уточнена логика include.
+    (HELPER) Создает, обновляет или УДАЛЯЕТ конфиг Nginx для самого Deployer'а.
+    Это ЕДИНСТВЕННАЯ функция, управляющая доступом к панели.
     """
     config_path = NGINX_SITES_DIR / "deployer-main.conf"
     deployer_port = os.getenv("PORT", "7999")
 
-    # --- Сценарий 1: Нет домена (доступ по IP) ---
+    # --- Сценарий 1: Домен удален ---
+    # Если домен не указан, мы просто удаляем конфиг и выходим.
+    # Nginx автоматически вернется к default_server в главном nginx.conf.
     if not domain:
-        config_content = f"""
-# Main configuration for Python Deployer UI (IP Access)
-server {{
-    listen 80;
-    server_name _;
+        if config_path.exists():
+            config_path.unlink()
+            print("INFO: deployer-main.conf deleted to revert to IP access.")
+        return
 
-    location / {{
-        proxy_pass http://127.0.0.1:{deployer_port};
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_read_timeout 86400;
-    }}
-}}
-"""
-        config_path.write_text(config_content, encoding="utf-8")
-        return  # Завершаем выполнение
+    # --- Сценарий 2: Домен задан ---
+    # Создаем или перезаписываем deployer-main.conf для конкретного домена.
 
-    # --- Сценарий 2: Есть домен ---
-    # Общие блоки, которые мы будем использовать
+    acme_challenge_block = f"""
+    # ACME Challenge Handler
+    location /.well-known/acme-challenge/ {{
+        root   {ACME_CHALLENGE_DIR.as_posix()};
+    }}"""
+
     proxy_block_for_deployer = f"""
     location / {{
         proxy_pass http://127.0.0.1:{deployer_port};
@@ -1576,10 +1688,8 @@ server {{
         proxy_read_timeout 86400;
     }}"""
 
-    # Уточняем путь для include, чтобы он был специфичен для текущего домена
     include_line_for_apps = f"    include {(NGINX_LOCATIONS_DIR / domain).as_posix()}/*.conf;"
 
-    # Проверяем, есть ли валидный SSL сертификат
     use_ssl = False
     ssl_config_block = ""
     if ssl_cert_name:
@@ -1595,22 +1705,21 @@ server {{
     ssl_protocols TLSv1.2 TLSv1.3;
 """
 
-    # Собираем финальный конфиг в зависимости от наличия SSL
     final_config = ""
     if use_ssl:
-        # --- Сценарий 2.1: Домен с SSL ---
         final_config = f"""
 # Main configuration for Python Deployer UI ({domain} with SSL)
-# HTTP redirect to HTTPS
 server {{
     listen 80;
     server_name {domain};
+
+    {acme_challenge_block}
+
     location / {{
         return 301 https://$host$request_uri;
     }}
 }}
 
-# HTTPS server
 server {{
     {ssl_config_block}
     server_name {domain};
@@ -1621,12 +1730,13 @@ server {{
 }}
 """
     else:
-        # --- Сценарий 2.2: Домен БЕЗ SSL ---
         final_config = f"""
 # Main configuration for Python Deployer UI ({domain} HTTP-only)
 server {{
     listen 80;
     server_name {domain};
+
+    {acme_challenge_block}
 
     {proxy_block_for_deployer}
 
@@ -1634,37 +1744,72 @@ server {{
 }}
 """
     config_path.write_text(final_config, encoding="utf-8")
+    print(f"INFO: deployer-main.conf created/updated for domain '{domain}'.")
 
 
 @app.post("/api/deployer/settings")
 async def update_deployer_settings(
+        request: Request, # <--- ДОБАВЛЕНО
         settings: DeployerSettingsUpdate,
         background_tasks: BackgroundTasks,
         current_user: Annotated[User, Depends(get_current_active_user)]
 ):
     """
-    Обновляет настройки доступа к самому Deployer'у.
-    Перезагрузка Nginx выполняется в фоновом режиме ПОСЛЕ отправки ответа.
+    Обновляет настройки доступа к Deployer'у.
+    Автоматически определяет URL для редиректа после смены настроек.
     """
     try:
-        # 1. Обновляем конфиг (это быстрая операция)
-        _update_deployer_nginx_config(settings.domain, settings.ssl_certificate_name)
+        # --- НАЧАЛО НОВОЙ ЛОГИКИ ---
+        current_settings = _get_deployer_settings_internal()
+        new_domain = settings.domain.strip() if settings.domain else None
+        new_ssl_cert_name = settings.ssl_certificate_name
 
-        # 2. Добавляем ДОЛГУЮ и ОПАСНУЮ команду в фоновые задачи
-        # Она выполнится ПОСЛЕ того, как мы отправим ответ клиенту.
+        redirect_url = None
+
+        # Определяем, какой URL должен быть ПОСЛЕ изменений
+        if new_domain:
+            protocol = "https" if new_ssl_cert_name else "http"
+            final_url = f"{protocol}://{new_domain}"
+        else:
+            # Если домена нет, возвращаемся на текущий хост по HTTP
+            final_url = f"http://{request.client.host}"
+            # Если используется нестандартный порт, добавим его
+            if request.url.port and request.url.port not in [80, 443]:
+                 final_url += f":{request.url.port}"
+
+
+        # Определяем, какой URL был ДО изменений
+        if current_settings.domain:
+            protocol = "https" if current_settings.ssl_certificate_name else "http"
+            current_url = f"{protocol}://{current_settings.domain}"
+        else:
+            current_url = f"http://{request.client.host}"
+            if request.url.port and request.url.port not in [80, 443]:
+                 current_url += f":{request.url.port}"
+
+        # Если URL доступа изменился, мы должны сообщить фронтенду, куда редиректить
+        if final_url.lower() != current_url.lower():
+            redirect_url = final_url
+        # --- КОНЕЦ НОВОЙ ЛОГИКИ ---
+
+        # 1. Создаем/удаляем deployer-main.conf
+        _update_deployer_nginx_config(new_domain, new_ssl_cert_name)
+
+        # 2. Перезагрузка Nginx в фоне
         background_tasks.add_task(run_command_sync, NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
 
-        # 3. Немедленно возвращаем ответ, не дожидаясь перезагрузки
-        return {"message": "Settings update command accepted. Nginx will be reloaded in the background."}
+        # 3. Ответ с URL для редиректа (или null, если URL не изменился)
+        return {
+            "message": "Settings update command accepted. Nginx will be reloaded in the background.",
+            "redirect_url": redirect_url
+        }
 
     except Exception as e:
-        # Если ошибка произошла на этапе записи конфига
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/deployer/settings", response_model=DeployerSettings)
-async def get_deployer_settings(current_user: Annotated[User, Depends(get_current_active_user)]):
-    """Получает текущие настройки доступа к Deployer'у из конфига Nginx."""
+def _get_deployer_settings_internal() -> DeployerSettings:
+    """Внутренний helper для получения настроек Deployer'а без зависимости от пользователя."""
     config_path = NGINX_SITES_DIR / "deployer-main.conf"
     domain = None
     ssl_cert_name = None
@@ -1688,8 +1833,13 @@ async def get_deployer_settings(current_user: Annotated[User, Depends(get_curren
         except Exception as e:
             print(f"Error parsing deployer-main.conf: {e}")
             # В случае ошибки просто вернем пустые значения
-
     return DeployerSettings(domain=domain, ssl_certificate_name=ssl_cert_name)
+
+
+@app.get("/api/deployer/settings", response_model=DeployerSettings)
+async def get_deployer_settings(current_user: Annotated[User, Depends(get_current_active_user)]):
+    """Получает текущие настройки доступа к Deployer'у из конфига Nginx."""
+    return _get_deployer_settings_internal()
 
 @app.get("/api/nginx/domains", response_model=List[str])
 async def list_nginx_domains(current_user: Annotated[User, Depends(get_current_active_user)]):

@@ -33,6 +33,12 @@ NGINX_RELOAD_CMD = "net stop nginx & timeout /t 3 /nobreak > NUL & net start ngi
 # --- Настройки NSSM ---
 NSSM_PATH = "C:\\ProgramData\\chocolatey\\bin\\nssm.exe"
 
+# --- Настройки Let's Encrypt / win-acme ---
+WIN_ACME_PATH = "C:\\tools\\win-acme\\wacs.exe"
+ACME_CHALLENGE_DIR = DATA_DIR / "acme-challenges"
+ACME_CHALLENGE_DIR.mkdir(exist_ok=True)
+
+
 # --- Настройки сети ---
 BASE_PORT = 8001
 

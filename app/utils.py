@@ -3,6 +3,7 @@ import subprocess
 import socket
 import logging
 import asyncio
+import sys
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -111,3 +112,19 @@ def find_free_port(start_port: int, existing_ports: set) -> int:
             if s.connect_ex(('localhost', port)) != 0:
                 return port
         port += 1
+
+def run_command_detached(command: str, cwd: str = None):
+    """
+    Запускает команду в новом, полностью отсоединенном процессе.
+    Не ждет ее завершения и не получает stdout/stderr.
+    Идеально для перезапуска служб, чтобы не убить родительский процесс.
+    """
+    logging.info(f"Executing detached command: '{command}' in '{cwd or 'default dir'}'")
+    # DETACHED_PROCESS работает только в Windows
+    creationflags = 0
+    if sys.platform == "win32":
+        creationflags = subprocess.DETACHED_PROCESS
+
+    subprocess.Popen(command, shell=True, cwd=cwd, creationflags=creationflags,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    logging.info(f"Detached command sent.")
