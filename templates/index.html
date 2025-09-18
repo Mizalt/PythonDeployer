@@ -444,6 +444,59 @@
             background-color: #dc3545; /* Фон краснеет при наведении */
             color: white; /* Иконка становится белой */
         }
+        /* Общие стили для всех select элементов */
+        select {
+            -webkit-appearance: none; /* Убираем стандартные стрелки в Webkit-браузерах */
+            -moz-appearance: none;    /* Убираем стандартные стрелки в Firefox */
+            appearance: none;         /* Убираем стандартные стрелки */
+            background-color: #fff;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 0.7rem 1rem; /* Увеличиваем паддинг */
+            font-family: inherit;
+            font-size: inherit;
+            line-height: 1.5;
+            cursor: pointer;
+            background-image: url('data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23333333%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13.2-6.2H18.2c-4.1%200-7.9%202-10.9%205.1-3%203.2-4.8%207.2-4.8%2011.6%200%204.4%201.8%208.4%204.8%2011.6l128.9%20127.8a17.6%2017.6%200%200%200%2023%200L287%2092.4a17.6%2017.6%200%200%200%200-23%22%2F%3E%3C%2Fsvg%3E');
+            background-repeat: no-repeat;
+            background-position: right 0.7rem top 50%;
+            background-size: 0.65em auto;
+            min-width: 150px; /* Чтобы не были слишком узкими */
+            box-sizing: border-box; /* Важно для паддинга */
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        select:hover {
+            border-color: #888;
+        }
+
+        select:focus {
+            border-color: #007bff;
+            outline: none;
+            box-shadow: 0 0 0 0.15rem rgba(0, 123, 255, 0.25);
+        }
+
+        select:disabled {
+            background-color: #e9ecef;
+            cursor: not-allowed;
+            opacity: 0.7;
+        }
+
+        /* Убираем кастомную стрелку для IE/Edge */
+        select::-ms-expand {
+            display: none;
+        }
+
+        /* Переопределение для конкретных селектов, если нужно */
+        form select#python_executable,
+        form select#deploy-ssl-cert-select,
+        form select#deploy-parent-domain,
+        form select#settings-ssl-cert-select,
+        form select#settings-parent-domain,
+        form select#nginx-config-select,
+        form select#deployer-ssl-cert-select {
+            width: 100%; /* Занимают всю доступную ширину в гриде */
+        }
     </style>
 
 </head>
