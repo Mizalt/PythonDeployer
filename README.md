@@ -44,10 +44,14 @@ Python Deployer — это комплексное решение, которое
 
 1.  **Запустите PowerShell от имени Администратора.**
 
-2.  **Выполните следующую команду**, чтобы скачать и запустить установочный скрипт:
+2.  **Выполните следующую команду**, чтобы скачать скрипт:
 
     ```powershell
-    Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://gist.githubusercontent.com/Mizalt/c7f24708cc8594faaf102ed4151b9b8b/raw/install_deployer.ps1'))
+    Invoke-WebRequest -Uri "https://gist.githubusercontent.com/Mizalt/c7f24708cc8594faaf102ed4151b9b8b/raw/72e716f7702b9bf896a379f85d404ba174ca63eb/install_deployer.ps1" -OutFile "C:\install_deployer.ps1"
+    ```
+3.  **Pапустить установочный скрипт:
+    ```powershell
+    Set-ExecutionPolicy Bypass -Scope Process -Force; C:\install_deployer.ps1
     ```
 
 ### Что делает установочный скрипт?
