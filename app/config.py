@@ -29,7 +29,7 @@ NGINX_LOCATIONS_DIR = DATA_DIR / "nginx-locations"
 NGINX_LOCATIONS_DIR.mkdir(exist_ok=True)
 
 # Команда для перезагрузки Nginx
-NGINX_RELOAD_CMD = ["cmd.exe", "/c", "net stop nginx & timeout /t 3 /nobreak > NUL & net start nginx"]
+NGINX_RELOAD_CMD = [str(NGINX_DIR / "nginx.exe"), "-s", "reload", "-p", str(NGINX_DIR)]
 
 
 
