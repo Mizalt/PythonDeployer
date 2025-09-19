@@ -216,7 +216,7 @@ def _get_app_final_status(app_name: str) -> str:
         print(f"DEBUG: Checking status for '{app_name}' (attempt {attempt}/{max_attempts})...")
 
         # Попытка 1: NSSM status (если вдруг заработает или даст полезную инфу)
-        nssm_code, nssm_out, nssm_err = run_command_sync(f'"{NSSM_PATH}" status "{app_name}"', timeout=5)
+        nssm_code, nssm_out, nssm_err = run_command_sync(command=[NSSM_PATH, "status", app_name], timeout=5)
         nssm_status_clean = nssm_out.strip().upper()
         if nssm_status_clean.startswith("'") and nssm_status_clean.endswith("'"):
             nssm_status_clean = nssm_status_clean[1:-1]
@@ -236,7 +236,8 @@ def _get_app_final_status(app_name: str) -> str:
 
         # Попытка 2: sc query (более надежный метод)
         # sc query выдает информацию о службе, нам нужна строка STATE
-        sc_code, sc_out, sc_err = run_command_sync(f'sc query "{app_name}"', timeout=5)
+        sc_code, sc_out, sc_err = run_command_sync(command=["sc", "query", app_name], timeout=5)
+
         print(f"DEBUG: SC query raw: Code={sc_code}, Out='{sc_out}', Err='{sc_err}'")
 
         if sc_code == 0:
@@ -322,6 +323,11 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
     операции в отдельных потоках.
     """
     name = app_data.name
+    if not re.match(r"^[a-zA-Z0-9_-]+$", name):
+        # Это должен быть внутренний ValidationError, т.к. внешний API уже должен был его отловить
+        # Но на случай, если AppCreate создается из другого места или валидация пропущена.
+        raise ValueError(f"Invalid application name detected during deployment: {name}")
+
     app_path = APPS_BASE_DIR / name
     backup_dir = BACKUPS_DIR / name
     logs_dir = app_path / "logs"
@@ -350,13 +356,14 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
         await manager.send_message(f"=== Проверка на наличие существующей службы '{name}'... ===", task_id)
 
         # Вспомогательная функция для запуска синхронной команды в потоке
-        async def run_sync_in_thread(command, cwd=None):
-            return await loop.run_in_executor(None, functools.partial(run_command_sync, command, cwd=cwd))
+        async def run_sync_in_thread_wrapper(command: list[str], cwd: str = None, use_shell: bool = False):
+            return await loop.run_in_executor(None, functools.partial(run_command_sync, command, cwd=cwd,
+                                                                      use_shell=use_shell))
 
         # Пробуем остановить и удалить, игнорируя ошибки (если службы нет, команда просто вернет ошибку)
-        await run_sync_in_thread(f'"{NSSM_PATH}" stop "{service_name}"')
+        await run_sync_in_thread_wrapper(command=[NSSM_PATH, "stop", service_name], use_shell=False)
         await asyncio.sleep(1)  # Небольшая пауза
-        code, out, err = await run_sync_in_thread(f'"{NSSM_PATH}" remove "{service_name}" confirm')
+        code, out, err = await run_sync_in_thread_wrapper(command=[str(NSSM_PATH), "remove", service_name, "confirm"], use_shell=False)
         if code == 0:
             await manager.send_message(f"[INFO] Обнаружена и удалена существующая служба '{name}'.", task_id)
         else:
@@ -384,7 +391,7 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
         await manager.send_message(f"[3/7] Создание venv с помощью '{python_executable}'...", task_id)
         try:
             # yield from (async for) для потоковой передачи логов
-            async for log_line in run_command_async(f'{python_executable} -m venv "{venv_path}"', cwd=str(app_path)):
+            async for log_line in run_command_async([python_executable, "-m", "venv", str(venv_path)], cwd=str(app_path)):
                 await manager.send_message(log_line, task_id)
         except subprocess.CalledProcessError:
             raise Exception("Не удалось создать виртуальное окружение. Проверьте путь к Python и права доступа.")
@@ -395,7 +402,7 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
             await manager.send_message("[4/7] Установка зависимостей из requirements.txt...", task_id)
             try:
                 # yield from (async for) для потоковой передачи логов
-                async for log_line in run_command_async(f'"{pip_path}" install -r requirements.txt', cwd=str(app_path)):
+                async for log_line in run_command_async([str(pip_path), "install", "-r", "requirements.txt"], cwd=str(app_path)):
                     await manager.send_message(log_line, task_id)
             except subprocess.CalledProcessError:
                 raise Exception("Не удалось установить зависимости (pip install провалился).")
@@ -406,11 +413,11 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
         await manager.send_message("[5/7] Настройка службы Windows (NSSM)...", task_id)
         python_in_venv = venv_path / "Scripts" / "python.exe"
 
-        async def run_sync_in_thread(command, cwd=None):
-            # Вспомогательная функция для запуска синхронной команды в потоке
-            return await loop.run_in_executor(None, functools.partial(run_command_sync, command, cwd=cwd))
+        async def run_sync_in_thread_wrapper(command: list[str], cwd: str = None, use_shell: bool = False):
+            return await loop.run_in_executor(None, functools.partial(run_command_sync, command, cwd=cwd,
+                                                                      use_shell=use_shell))
 
-        code, _, err = await run_sync_in_thread(f'"{NSSM_PATH}" install "{service_name}" "{python_in_venv}"')
+        code, _, err = await run_sync_in_thread_wrapper(command=[NSSM_PATH, "install", service_name, str(python_in_venv)])
         if code != 0: raise Exception(f"NSSM install failed: {err}")
         service_created = True
 
@@ -424,11 +431,10 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
             await manager.send_message(
                 f"[INFO] Команда Uvicorn адаптирована. Финальная команда: ... {final_start_script}", task_id)
 
-        code, _, err = await run_sync_in_thread(
-            f'"{NSSM_PATH}" set "{service_name}" AppParameters "{final_start_script}"')
+        code, _, err = await run_sync_in_thread_wrapper(command=[NSSM_PATH, "set", service_name, "AppParameters", final_start_script])
         if code != 0: raise Exception(f"NSSM set AppParameters failed: {err}")
 
-        code, _, err = await run_sync_in_thread(f'"{NSSM_PATH}" set "{service_name}" AppDirectory "{app_path}"')
+        code, _, err = await run_sync_in_thread_wrapper(command=[NSSM_PATH, "set", service_name, "AppDirectory", str(app_path)])
         if code != 0: raise Exception(f"NSSM set AppDirectory failed: {err}")
 
         env_vars_str = f"PORT={app_data.port}"
@@ -436,15 +442,14 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
             for key, value in app_data.env_vars.items():
                 env_vars_str += f' {key}="{value}"'
 
-        code, _, err = await run_sync_in_thread(
-            f'"{NSSM_PATH}" set "{service_name}" AppEnvironmentExtra "{env_vars_str}"')
+        code, _, err = await run_sync_in_thread_wrapper(command=[NSSM_PATH, "set", service_name, "AppEnvironmentExtra", env_vars_str])
         if code != 0: raise Exception(f"NSSM set AppEnvironmentExtra failed: {err}")
         await manager.send_message("Переменные окружения установлены.", task_id)
 
-        code, _, err = await run_sync_in_thread(f'"{NSSM_PATH}" set "{service_name}" AppStdout "{log_file_path}"')
+        code, _, err = await run_sync_in_thread_wrapper(command=[NSSM_PATH, "set", service_name, "AppStdout", str(log_file_path)])
         if code != 0: raise Exception(f"NSSM set AppStdout failed: {err}")
 
-        code, _, err = await run_sync_in_thread(f'"{NSSM_PATH}" set "{service_name}" AppStderr "{log_file_path}"')
+        code, _, err = await run_sync_in_thread_wrapper(command=[NSSM_PATH, "set", service_name, "AppStderr", str(log_file_path)])
         if code != 0: raise Exception(f"NSSM set AppStderr failed: {err}")
 
         await manager.send_message("Служба NSSM настроена.", task_id)
@@ -460,7 +465,7 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
                                        app_data.parent_domain)
             nginx_config_created = True  # Флаг того, что конфиг создан
             await manager.send_message(f"Конфигурация Nginx сохранена в {nginx_conf_path}", task_id)
-            code, out, err = await run_sync_in_thread(NGINX_RELOAD_CMD)
+            code, out, err = await run_sync_in_thread_wrapper(command=NGINX_RELOAD_CMD, use_shell=True)
             if code != 0:
                 await manager.send_message(
                     f"[WARNING] Не удалось перезагрузить Nginx: {err or out}. Возможно, доступ будет некорректным.",
@@ -472,7 +477,7 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
 
         # 7. Запуск службы
         await manager.send_message("[7/7] Запуск службы...", task_id)
-        code, _, err = await run_sync_in_thread(f'"{NSSM_PATH}" start "{service_name}"')
+        code, _, err = await run_sync_in_thread_wrapper(command=[NSSM_PATH, "start", service_name])
         if code != 0:
             # Если NSSM start вернул ошибку, но сервис уже запущен, это не критическая ошибка
             if "already running" in err.lower() or "уже запущена" in err.lower():
@@ -530,7 +535,7 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
         # Откат: блокирующие операции также запускаем в потоке
         if service_created:
             await manager.send_message("Удаление службы NSSM...", task_id)
-            await run_sync_in_thread(f'"{NSSM_PATH}" remove "{service_name}" confirm')
+            await run_sync_in_thread_wrapper(f'"{NSSM_PATH}" remove "{service_name}" confirm')
 
         await loop.run_in_executor(None, shutil.rmtree, app_path, True)
 
@@ -538,7 +543,7 @@ async def perform_deployment(task_id: str, app_data: AppCreate, zip_file_path: P
             await manager.send_message("Удаление конфигурации Nginx...", task_id)
             if nginx_conf_path.exists():
                 nginx_conf_path.unlink()
-                await run_sync_in_thread(NGINX_RELOAD_CMD)
+                await run_sync_in_thread_wrapper(command=NGINX_RELOAD_CMD, use_shell=True)
 
         await manager.send_message("Откат завершен. Закройте это окно.", task_id)
     finally:
@@ -597,7 +602,7 @@ async def perform_static_deployment(task_id: str, app_data: AppCreate, zip_file_
         nginx_config_created = True
         await manager.send_message(" -> Конфигурация Nginx создана. Перезагрузка...", task_id)
 
-        code, out, err = await loop.run_in_executor(None, functools.partial(run_command_sync, NGINX_RELOAD_CMD))
+        code, out, err = await loop.run_in_executor(None, functools.partial(run_command_sync, command=NGINX_RELOAD_CMD, use_shell=True))
         if code != 0:
             await manager.send_message(f" -> [WARNING] Не удалось перезагрузить Nginx: {err or out}", task_id)
         else:
@@ -631,7 +636,7 @@ async def perform_static_deployment(task_id: str, app_data: AppCreate, zip_file_
             try:
                 await loop.run_in_executor(None, _update_nginx_config_for_app,
                                            name, None, None, None, app_data.parent_domain, "static_site")
-                await loop.run_in_executor(None, functools.partial(run_command_sync, NGINX_RELOAD_CMD))
+                await loop.run_in_executor(None, functools.partial(run_command_sync, command=NGINX_RELOAD_CMD))
                 await manager.send_message(" -> Конфигурация Nginx удалена.", task_id)
             except Exception as nginx_err:
                 await manager.send_message(f" -> [WARNING] Ошибка при откате конфига Nginx: {nginx_err}", task_id)
@@ -667,7 +672,7 @@ def _redeploy_from_zip(app_info: App, zip_path: Path):
 
     # 3. Устанавливаем зависимости из нового requirements.txt (если есть)
     if (app_path / "requirements.txt").exists():
-        code, _, err = run_command_sync(f'"{pip_path}" install -r requirements.txt', cwd=str(app_path))
+        code, _, err = run_command_sync(command=[str(pip_path), "install", "-r", "requirements.txt"], cwd=str(app_path), use_shell=False)
         if code != 0:
             raise Exception(f"Failed to install dependencies: {err}. Please check logs.")
 
@@ -686,6 +691,19 @@ def _update_nginx_config_for_app(
     - Для доменов: создает файл в nginx-sites с include на свою папку в nginx-locations.
     - Для путей: требует parent_domain и создает файл в папке nginx-locations/parent_domain/.
     """
+
+    # Добавьте валидацию здесь
+    if not re.match(r"^[a-zA-Z0-9_-]+$", app_name):
+        raise ValueError(f"Invalid app_name in Nginx config helper: {app_name}")
+
+    if nginx_proxy_target and not nginx_proxy_target.startswith('/'):  # Это домен
+        if not re.match(r"^[a-zA-Z0-9.-]+$", nginx_proxy_target):
+            raise ValueError(f"Invalid domain name in Nginx config helper: {nginx_proxy_target}")
+
+    if parent_domain and not re.match(r"^[a-zA-Z0-9.-]+$", parent_domain):
+        raise ValueError(f"Invalid parent_domain in Nginx config helper: {parent_domain}")
+
+
     # Полная очистка старых конфигов
     site_conf_path = NGINX_SITES_DIR / f"{app_name}.conf"
     if site_conf_path.exists(): site_conf_path.unlink()
@@ -844,12 +862,16 @@ async def perform_ssl_issuance(task_id: str, domain: str):
 
         # --- НАЧАЛО ИЗМЕНЕНИЙ ---
         # 1. Убираем --quiet
-        delete_command = f'"{win_acme_exe}" --cancel --id "{domain}"'
+        delete_command_args = [
+            str(win_acme_exe),
+            "--cancel",
+            "--id", domain
+        ]
 
         # 2. Оборачиваем вызов в try/except, чтобы программа не падала,
         # если команда завершится с ошибкой (что нормально, если задания нет).
         try:
-            async for log_line in run_command_async(delete_command):
+            async for log_line in run_command_async(delete_command_args):
                 await manager.send_message(log_line, task_id)
         except subprocess.CalledProcessError:
             await manager.send_message(
@@ -857,10 +879,21 @@ async def perform_ssl_issuance(task_id: str, domain: str):
         # --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
         await manager.send_message("\n[3/4] Запуск win-acme. Это может занять до 2 минут...", task_id)
-        command = (f'"{win_acme_exe}" --force --verbose --source manual --host {domain} '
-                   f'--validation filesystem --webroot "{webroot_path}" --store pemfiles '
-                   f'--pemfilespath "{pem_files_path}" --csr rsa --accepttos --emailaddress "admin@18zim.ru"')
-        async for log_line in run_command_async(command): await manager.send_message(log_line, task_id)
+        command_args = [
+            str(win_acme_exe),  # Путь к исполняемому файлу как первый аргумент
+            "--force",
+            "--verbose",
+            "--source", "manual",
+            "--host", domain,  # <-- domain передается как отдельный аргумент
+            "--validation", "filesystem",
+            "--webroot", str(webroot_path),  # <-- webroot_path передается как отдельный аргумент
+            "--store", "pemfiles",
+            "--pemfilespath", str(pem_files_path),  # <-- pem_files_path передается как отдельный аргумент
+            "--csr", "rsa",
+            "--accepttos",
+            "--emailaddress", "admin@18zim.ru"
+        ]
+        async for log_line in run_command_async(command_args): await manager.send_message(log_line, task_id)
 
         await manager.send_message("\n[4/4] Обработка и переименование файлов сертификата...", task_id)
 
@@ -1099,7 +1132,7 @@ async def update_app_config(
                                          config.ssl_certificate_name,
                                          config.parent_domain,
                                          "static_site")
-            background_tasks.add_task(run_command_sync, NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
+            background_tasks.add_task(run_command_sync, command=NGINX_RELOAD_CMD, cwd=str(NGINX_DIR), use_shell=True)
 
         # Обновляем данные в БД
         app_info.nginx_proxy_target = config.nginx_proxy_target
@@ -1119,7 +1152,7 @@ async def update_app_config(
 
     try:
         if original_status_was_running:
-            run_command_sync(f'"{NSSM_PATH}" stop "{app_name}"')
+            run_command_sync(command=[NSSM_PATH, "stop", app_name])
             time.sleep(2)
 
         final_start_script = config.start_script
@@ -1128,12 +1161,12 @@ async def update_app_config(
             final_start_script = re.sub(r'\s--port\s+\S+', '', final_start_script)
             final_start_script += f' --host 127.0.0.1 --port {config.port}'
 
-        run_command_sync(f'"{NSSM_PATH}" set "{app_name}" AppParameters "{final_start_script}"')
+        run_command_sync(command=[NSSM_PATH, "set", app_name, "AppParameters", final_start_script])
         env_vars_str = f"PORT={config.port}"
         if config.env_vars:
             for key, value in config.env_vars.items():
                 env_vars_str += f' {key}="{value}"'
-        run_command_sync(f'"{NSSM_PATH}" set "{app_name}" AppEnvironmentExtra "{env_vars_str}"')
+        run_command_sync(command=[NSSM_PATH, "set", app_name, "AppEnvironmentExtra", env_vars_str])
 
         if nginx_config_changed:
             _update_nginx_config_for_app(app_name,
@@ -1142,7 +1175,7 @@ async def update_app_config(
                                          config.ssl_certificate_name,
                                          config.parent_domain,
                                          "python_app")
-            background_tasks.add_task(run_command_sync, NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
+            background_tasks.add_task(run_command_sync, command=NGINX_RELOAD_CMD, cwd=str(NGINX_DIR), use_shell=True)
 
         app_info.port = config.port
         app_info.start_script = final_start_script
@@ -1152,7 +1185,7 @@ async def update_app_config(
         app_info.parent_domain = config.parent_domain  # Добавлено обновление этого поля
 
         if original_status_was_running:
-            run_command_sync(f'"{NSSM_PATH}" start "{app_name}"')
+            run_command_sync(command=[NSSM_PATH, "start", app_name])
             app_info.status = _get_app_final_status(app_name)
         else:
             app_info.status = "stopped"
@@ -1163,7 +1196,7 @@ async def update_app_config(
 
     except Exception as e:
         if original_status_was_running:
-            run_command_sync(f'"{NSSM_PATH}" start "{app_name}"')
+            run_command_sync(command=[NSSM_PATH, "start", app_name])
             app_info.status = _get_app_final_status(app_name)
             add_or_update_app(app_info)
         raise HTTPException(status_code=500, detail=f"Failed to update configuration: {str(e)}")
@@ -1274,12 +1307,18 @@ def control_app(app_name: str, payload: AppAction, current_user: Annotated[User,
         raise HTTPException(status_code=404, detail="App not found")
 
     action = payload.action
+
+    # ПРОВЕРКА ИМЕНИ ПРИЛОЖЕНИЯ
+
+    if not re.match(r"^[a-zA-Z0-9_-]+$", app_name):
+        raise HTTPException(status_code=400, detail="Invalid application name.")
+
     if action == "restart":
-        run_command_sync(f'"{NSSM_PATH}" stop "{app_info.name}"')
+        run_command_sync(command=[str(NSSM_PATH), "stop", app_info.name], use_shell=False)
         time.sleep(2)  # Ждем, чтобы служба гарантированно остановилась
-        code, out, err = run_command_sync(f'"{NSSM_PATH}" start "{app_info.name}"')
+        code, out, err = run_command_sync(command=[str(NSSM_PATH), "start", app_info.name])
     else:
-        code, out, err = run_command_sync(f'"{NSSM_PATH}" {action} "{app_info.name}"')
+        code, out, err = run_command_sync(command=[str(NSSM_PATH), action, app_info.name])
 
     # Обработка случая, когда сервис уже запущен, а мы даем команду start
     if action == "start" and code != 0 and ("уже запущена" in err.lower() or "already running" in err.lower()):
@@ -1309,21 +1348,28 @@ def delete_app_api(app_name: str, background_tasks: BackgroundTasks, current_use
         # Шаги 1 и 2: Управление сервисом, применимо только к Python-приложениям
         if app_info.app_type == "python_app":
             # 1. Остановить и принудительно завершить процесс
-            run_command_sync(f'"{NSSM_PATH}" stop "{app_name}"')
+            run_command_sync(command=[NSSM_PATH, "stop", app_name])
             time.sleep(1)
             try:
-                netstat_cmd = f'netstat -aon | findstr "LISTENING" | findstr ":{app_info.port}"'
-                code, out, err = run_command_sync(netstat_cmd)
-                if code == 0 and out:
-                    pid = int(out.strip().split()[-1])
-                    os.kill(pid, signal.SIGTERM)
-                    time.sleep(0.5)
-                    os.kill(pid, signal.SIGKILL)
+                process_netstat = subprocess.run(["netstat", "-aon"], capture_output=True, text=True, check=False)
+                if process_netstat.returncode == 0:
+                    filtered_lines = [
+                        line for line in process_netstat.stdout.splitlines()
+                        if "LISTENING" in line and f":{app_info.port}" in line
+                    ]
+                    if filtered_lines:
+                        # Найти PID в первой подходящей строке
+                        pid_match = re.search(r'\s+(\d+)\s*$', filtered_lines[0])
+                        if pid_match:
+                            pid = int(pid_match.group(1))
+                            os.kill(pid, signal.SIGTERM)
+                            time.sleep(0.5)
+                            os.kill(pid, signal.SIGKILL)
             except Exception:
                 pass  # Игнорируем ошибки, если процесс уже завершен
 
             # 2. Удалить службу NSSM
-            run_command_sync(f'"{NSSM_PATH}" remove "{app_name}" confirm')
+            run_command_sync(command=[str(NSSM_PATH), "remove", app_name, "confirm"])
 
         # 3. Удалить файлы приложения (общий шаг)
         if Path(app_info.app_path).exists():
@@ -1356,7 +1402,7 @@ def delete_app_api(app_name: str, background_tasks: BackgroundTasks, current_use
 
         if config_deleted:
             # --- Перезагружаем Nginx в фоне ПОСЛЕ отправки ответа ---
-            background_tasks.add_task(run_command_sync, NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
+            background_tasks.add_task(run_command_sync, command=NGINX_RELOAD_CMD, cwd=str(NGINX_DIR), use_shell=True)
 
             # 6. Удалить из БД
         delete_app(app_name)
@@ -1389,10 +1435,10 @@ async def update_app(
     try:
         if app_info.app_type == "python_app":
             # Логика обновления для Python приложения
-            run_command_sync(f'"{NSSM_PATH}" stop "{app_name}"')
+            run_command_sync(command=[NSSM_PATH, "stop", app_name])
             time.sleep(2)
             _redeploy_from_zip(app_info, backup_zip_path)
-            run_command_sync(f'"{NSSM_PATH}" start "{app_name}"')
+            run_command_sync(command=[NSSM_PATH, "start", app_name])
             app_info.status = _get_app_final_status(app_name)
             add_or_update_app(app_info)
             return {
@@ -1410,13 +1456,13 @@ async def update_app(
             with zipfile.ZipFile(backup_zip_path, 'r') as zip_ref:
                 zip_ref.extractall(app_path)
             # 3. Перезагружаем Nginx, чтобы он подхватил новые файлы
-            background_tasks.add_task(run_command_sync, NGINX_RELOAD_CMD)
+            background_tasks.add_task(run_command_sync, command=NGINX_RELOAD_CMD)
             add_or_update_app(app_info)
             return {"message": f"Static site '{app_name}' updated successfully. Nginx will now reload."}
     except Exception as e:
         # В случае ошибки пытаемся запустить Python-приложение обратно
         if app_info.app_type == "python_app":
-            run_command_sync(f'"{NSSM_PATH}" start "{app_name}"')
+            run_command_sync(command=[NSSM_PATH, "start", app_name])
             app_info.status = _get_app_final_status(app_name)
             add_or_update_app(app_info)
         raise HTTPException(status_code=500, detail=f"Failed to update app: {str(e)}")
@@ -1453,7 +1499,7 @@ def restore_deployment(app_name: str, request: RestoreRequest,
 
     try:
         # 1. Останавливаем сервис
-        code, _, err = run_command_sync(f'"{NSSM_PATH}" stop "{app_name}"')
+        code, _, err = run_command_sync(command=[NSSM_PATH, "stop", app_name])
         if code != 0: raise Exception(f"NSSM stop failed: {err}")
         time.sleep(2)  # Ждем остановки
 
@@ -1461,7 +1507,7 @@ def restore_deployment(app_name: str, request: RestoreRequest,
         _redeploy_from_zip(app_info, backup_zip_path)
 
         # 3. Запускаем сервис
-        code, _, err = run_command_sync(f'"{NSSM_PATH}" start "{app_name}"')
+        code, _, err = run_command_sync(command=[NSSM_PATH, "start", app_name])
         if code != 0: raise Exception(f"NSSM start failed: {err}")
 
         # 4. Обновляем статус в БД
@@ -1470,7 +1516,7 @@ def restore_deployment(app_name: str, request: RestoreRequest,
         return {
             "message": f"App '{app_name}' restored successfully from '{request.filename}'. Final status: {app_info.status.upper()}"}
     except Exception as e:
-        run_command_sync(f'"{NSSM_PATH}" start "{app_name}"')
+        run_command_sync(command=[NSSM_PATH, "start", app_name])
         app_info.status = _get_app_final_status(app_name)  # Обновляем статус в БД
         add_or_update_app(app_info)
         raise HTTPException(status_code=500, detail=f"Failed to restore app: {str(e)}")
@@ -1527,13 +1573,14 @@ def validate_nginx_path(target_path: Path, for_delete: bool = False):
             detail="Editing this path is not allowed. Only main config, site configs, or location configs are permitted."
         )
 
-    # Если это новый файл, убедимся, что его родительская директория существует и это ОДНА ИЗ РАЗРЕШЕННЫХ
+    # Если файл не существует, дополнительно проверяем, что он создается в ДОПУСТИМОЙ поддиректории
     if not target_path.exists():
-        allowed_parent_dirs = [NGINX_SITES_DIR, NGINX_LOCATIONS_DIR]
-        if not any(target_path.parent.samefile(d) for d in allowed_parent_dirs):
-             raise HTTPException(
+        # Проверяем, что новый файл будет находиться внутри разрешенных директорий
+        if not (target_path.absolute().parent.is_relative_to(NGINX_SITES_DIR) or
+                target_path.absolute().parent.is_relative_to(NGINX_LOCATIONS_DIR)):
+            raise HTTPException(
                 status_code=403,
-                detail="New config files can only be created in the Nginx sites or locations directory."
+                detail="New config files can only be created within the Nginx sites or locations directories."
             )
 
 
@@ -1628,7 +1675,7 @@ async def delete_nginx_config(
         target_path.unlink()
 
         # Это позволит немедленно вернуть ответ браузеру, избегая ошибки 'Failed to fetch'.
-        background_tasks.add_task(run_command_sync, NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
+        background_tasks.add_task(run_command_sync, command=NGINX_RELOAD_CMD, cwd=str(NGINX_DIR), use_shell=True)
 
         return {"message": f"Config file '{target_path.name}' deleted. Nginx will be reloaded in the background."}
     except Exception as e:
@@ -1642,7 +1689,7 @@ async def reload_nginx(
 ):
     """Перезагружает Nginx в фоновом режиме."""
     try:
-        background_tasks.add_task(run_command_sync, NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
+        background_tasks.add_task(run_command_sync, command=NGINX_RELOAD_CMD, cwd=str(NGINX_DIR), use_shell=True)
         return {"message": "Nginx reload command has been sent to the background."}
     except Exception as e:
         # Эта ошибка маловероятна, но на всякий случай
@@ -1796,7 +1843,7 @@ async def update_deployer_settings(
         _update_deployer_nginx_config(new_domain, new_ssl_cert_name)
 
         # 2. Перезагрузка Nginx в фоне
-        background_tasks.add_task(run_command_sync, NGINX_RELOAD_CMD, cwd=str(NGINX_DIR))
+        background_tasks.add_task(run_command_sync, command=NGINX_RELOAD_CMD, cwd=str(NGINX_DIR), use_shell=True)
 
         # 3. Ответ с URL для редиректа (или null, если URL не изменился)
         return {

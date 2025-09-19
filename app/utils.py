@@ -4,6 +4,7 @@ import socket
 import logging
 import asyncio
 import sys
+import shlex
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -26,14 +27,13 @@ def decode_windows_output(byte_string: bytes) -> str:
     return byte_string.decode('utf-8', errors='ignore').strip()
 
 
-async def run_command_async(command: str, cwd: str = None):
+async def run_command_async(command: list, cwd: str = None):
     """
-    АСИНХРОННО выполняет команду и передает (yield) строки stdout и stderr.
-    Используется для потоковой передачи логов деплоя через WebSocket.
+    АСИНХРОННО выполняет команду. Принимает список аргументов.
     """
-    logging.info(f"Executing async command: '{command}' in '{cwd or 'default dir'}'")
-    process = await asyncio.create_subprocess_shell(
-        command,
+    logging.info(f"Executing async command: '{' '.join(command)}' in '{cwd or 'default dir'}'")
+    process = await asyncio.create_subprocess_exec( # Изменить на create_subprocess_exec
+        *command, # Распаковать список
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd
@@ -66,20 +66,19 @@ async def run_command_async(command: str, cwd: str = None):
         raise subprocess.CalledProcessError(process.returncode, command)
 
 
-def run_command_sync(command: str, cwd: str = None, timeout: int = 30) -> tuple[int, str, str]:
+def run_command_sync(command: list[str], cwd: str = None, timeout: int = 30, use_shell: bool = False) -> tuple[int, str, str]:
     """
-    СИНХРОННО выполняет команду в оболочке и возвращает кортеж
-    (код возврата, stdout, stderr), корректно декодируя вывод Windows.
-    Добавлен аргумент timeout для ограничения времени выполнения.
+    СИНХРОННО выполняет команду. Принимает список аргументов.
     """
-    logging.info(f"Executing command: '{command}' in '{cwd or 'default dir'}' with timeout {timeout}s")
+    logging.info(f"Executing command: '{' '.join(command)}' in '{cwd or 'default dir'}' with timeout {timeout}s")
     try:
         process = subprocess.run(
-            command,
-            shell=True,
+            command if not use_shell else ' '.join(command),  # Если use_shell, то объединяем в строку
+            shell=use_shell,
             capture_output=True,
             cwd=cwd,
-            timeout=timeout
+            timeout=timeout,
+            check=False # Чтобы не выбрасывать исключение при ненулевом коде возврата
         )
 
         stdout_str = decode_windows_output(process.stdout)
