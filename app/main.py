@@ -35,7 +35,7 @@ from .config import (
     NSSM_PATH, BASE_PORT, ACCESS_TOKEN_EXPIRE_MINUTES, DB_FILE,
     PYTHON_EXECUTABLES, DEFAULT_PYTHON_EXECUTABLE, NGINX_SITES_DIR,
     NGINX_DIR, SSL_DIR, NGINX_LOCATIONS_DIR,
-    WIN_ACME_PATH, ACME_CHALLENGE_DIR
+    WIN_ACME_PATH, ACME_CHALLENGE_DIR,
 )
 from .database_sqlite import (
     init_db, get_all_apps, get_app_by_name, add_or_update_app, delete_app,
@@ -48,7 +48,7 @@ from .models import (
     IssueSSLRequest
 )
 # Добавляем асинхронный и синхронный запуск команд
-from .utils import run_command_sync, find_free_port, run_command_async, run_command_detached
+from .utils import run_command_sync, find_free_port, run_command_async, is_safe_name, is_safe_script_command
 from .auth import verify_password, create_access_token, get_current_active_user, get_optional_current_user, User
 from starlette.responses import RedirectResponse
 
@@ -129,6 +129,8 @@ async def proxy_app(
     Он принимает запрос, находит нужный порт приложения и перенаправляет
     запрос на http://localhost:<port>/<path>, а затем возвращает ответ.
     """
+    if not is_safe_name(app_name):
+        raise HTTPException(status_code=400, detail="Invalid application name.")
     app_info = get_app_by_name(app_name)
     if not app_info:
         raise HTTPException(status_code=404, detail="App to proxy not found")
@@ -205,6 +207,9 @@ def _get_app_final_status(app_name: str) -> str:
     Возвращает 'running' или 'stopped' при успешном определении,
     или 'error', если статус не удалось определить за все попытки.
     """
+    if not is_safe_name(app_name):
+        raise HTTPException(status_code=400, detail="Invalid application name.")
+
     max_attempts = 15
     initial_delay = 3  # Задержка в 3 секунды перед первой проверкой
     poll_interval = 2  # Интервал между попытками
@@ -691,6 +696,8 @@ def _update_nginx_config_for_app(
     - Для доменов: создает файл в nginx-sites с include на свою папку в nginx-locations.
     - Для путей: требует parent_domain и создает файл в папке nginx-locations/parent_domain/.
     """
+    if not is_safe_name(app_name):
+        raise HTTPException(status_code=400, detail="Invalid application name.")
 
     # Добавьте валидацию здесь
     if not re.match(r"^[a-zA-Z0-9_-]+$", app_name):
@@ -1017,6 +1024,12 @@ async def deploy_app(
     Легковесный эндпоинт для запуска процесса развертывания.
     Валидирует данные, сохраняет zip, запускает фоновую задачу и немедленно возвращает task_id.
     """
+    if not is_safe_script_command(start_script):
+        raise HTTPException(status_code=400, detail="Invalid start script. Contains forbidden characters.")
+
+    if not is_safe_name(name):
+        raise HTTPException(status_code=400,
+                            detail="Invalid application name. Use only letters, numbers, hyphens, and underscores.")
     if get_app_by_name(name):
         raise HTTPException(status_code=400, detail=f"App with name '{name}' already exists.")
 
@@ -1097,6 +1110,13 @@ async def update_app_config(
         current_user: Annotated[User, Depends(get_current_active_user)]
 ):
     """Обновляет конфигурацию существующего приложения (Python или статика)."""
+
+    if config.start_script and not is_safe_script_command(config.start_script):
+        raise HTTPException(status_code=400, detail="Invalid start script. Contains forbidden characters.")
+
+    if not is_safe_name(app_name):
+        raise HTTPException(status_code=400, detail="Invalid application name.")
+
     app_info = get_app_by_name(app_name)
     if not app_info:
         raise HTTPException(status_code=404, detail="App not found")
@@ -1228,6 +1248,7 @@ async def upload_ssl_certificate(
 ):
     """Загружает новый SSL сертификат."""
     # Валидация имени, чтобы избежать '..' и других опасных символов
+
     if not re.match(r"^[a-zA-Z0-9._-]+$", name):
         raise HTTPException(status_code=400,
                             detail="Invalid certificate name. Use only letters, numbers, dots, underscores, and hyphens.")
@@ -1261,6 +1282,8 @@ async def upload_ssl_certificate(
 @app.delete("/api/ssl/certificates/{cert_name}")
 async def delete_ssl_certificate(cert_name: str, current_user: Annotated[User, Depends(get_current_active_user)]):
     """Удаляет SSL сертификат."""
+
+
     if not re.match(r"^[a-zA-Z0-9._-]+$", cert_name):
         raise HTTPException(status_code=400, detail="Invalid certificate name.")
 
@@ -1302,6 +1325,10 @@ async def issue_ssl_certificate(
 @app.post("/api/apps/{app_name}/actions")
 def control_app(app_name: str, payload: AppAction, current_user: Annotated[User, Depends(get_current_active_user)]):
     """Управляет службой (start, stop, restart)."""
+
+    if not is_safe_name(app_name):
+        raise HTTPException(status_code=400, detail="Invalid application name.")
+
     app_info = get_app_by_name(app_name)
     if not app_info:
         raise HTTPException(status_code=404, detail="App not found")
@@ -1338,6 +1365,10 @@ def control_app(app_name: str, payload: AppAction, current_user: Annotated[User,
 @app.delete("/api/apps/{app_name}")
 def delete_app_api(app_name: str, background_tasks: BackgroundTasks, current_user: Annotated[User, Depends(get_current_active_user)]):
     """Полное удаление приложения с принудительным завершением процесса."""
+
+    if not is_safe_name(app_name):
+        raise HTTPException(status_code=400, detail="Invalid application name.")
+
     app_info = get_app_by_name(app_name)
     if not app_info:
         raise HTTPException(status_code=404, detail="App not found")
@@ -1419,6 +1450,10 @@ async def update_app(
     zip_file: UploadFile = File(...)
 ):
     """Обновляет приложение из нового ZIP-архива."""
+
+    if not is_safe_name(app_name):
+        raise HTTPException(status_code=400, detail="Invalid application name.")
+
     app_info = get_app_by_name(app_name)
     if not app_info:
         raise HTTPException(status_code=404, detail="App not found")
@@ -1471,6 +1506,10 @@ async def update_app(
 @app.get("/api/apps/{app_name}/history", response_model=List[DeploymentHistory])
 def get_deployment_history(app_name: str, current_user: Annotated[User, Depends(get_current_active_user)]):
     """Получает историю деплоев (сканируя папку с бекапами)."""
+
+    if not is_safe_name(app_name):
+        raise HTTPException(status_code=400, detail="Invalid application name.")
+
     backup_dir = BACKUPS_DIR / app_name
     if not backup_dir.exists():
         return []
@@ -1489,6 +1528,10 @@ def get_deployment_history(app_name: str, current_user: Annotated[User, Depends(
 def restore_deployment(app_name: str, request: RestoreRequest,
                        current_user: Annotated[User, Depends(get_current_active_user)]):
     """Восстанавливает приложение из выбранного файла бекапа."""
+
+    if not is_safe_name(app_name):
+        raise HTTPException(status_code=400, detail="Invalid application name.")
+
     app_info = get_app_by_name(app_name)
     if not app_info:
         raise HTTPException(status_code=404, detail="App not found")
@@ -1526,6 +1569,10 @@ def restore_deployment(app_name: str, request: RestoreRequest,
 def get_app_logs(app_name: str, current_user: Annotated[User, Depends(get_current_active_user)],
                  lines: int = Query(100, ge=1, le=1000)):
     """Читает N последних строк из лог-файла приложения."""
+
+    if not is_safe_name(app_name):
+        raise HTTPException(status_code=400, detail="Invalid application name.")
+
     app_info = get_app_by_name(app_name)
     if not app_info:
         raise HTTPException(status_code=404, detail="App not found")

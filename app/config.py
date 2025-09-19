@@ -31,6 +31,9 @@ NGINX_LOCATIONS_DIR.mkdir(exist_ok=True)
 # Команда для перезагрузки Nginx
 NGINX_RELOAD_CMD = ["cmd.exe", "/c", "net stop nginx & timeout /t 3 /nobreak > NUL & net start nginx"]
 
+
+
+
 # --- Настройки NSSM ---
 NSSM_PATH = "C:\\ProgramData\\chocolatey\\bin\\nssm.exe"
 

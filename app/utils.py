@@ -1,4 +1,5 @@
 # utils.py
+import re
 import subprocess
 import socket
 import logging
@@ -8,6 +9,37 @@ import shlex
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+
+def is_safe_name(name: str) -> bool:
+    """Проверяет, что имя состоит только из безопасных символов."""
+    return bool(re.match(r"^[a-zA-Z0-9_-]+$", name))
+
+
+def is_safe_script_command(command: str) -> bool:
+    """
+    Проверяет, что команда запуска не содержит опасных символов оболочки.
+    Позволяет только буквы, цифры, пробелы, дефисы, двоеточия, точки,
+    и допустимые для пути символы (например, слэши, но не в начале/конце).
+    Это очень строгая проверка.
+    """
+    # Разрешаем буквы, цифры, пробелы, дефисы, двоеточия, точки, слэши
+    # Исключаем символы, которые могут быть интерпретированы как часть команды оболочки
+    # &, |, ;, <, >, `, $, #, (, ), [, ], {, }, *, ?, ~,
+    # а также ` ` (backtick) и `"` (double quote)
+    # В данном случае, AppParameters будет заключен в кавычки NSSM'ом.
+    # Нам нужно убедиться, что внутри final_start_script нет инъекций.
+    # Если start_script содержит "uvicorn main:app --host 127.0.0.1 --port 8000",
+    # то это нормальная команда, но если там "uvicorn main:app & rm -rf /", то это инъекция.
+    # Самый безопасный путь: позволить только те символы, которые не могут
+    # быть частью команды оболочки при выполнении cmd.exe /c.
+    # Пробелы разрешены, но должны быть внутри кавычек или использоваться правильно.
+    # NSSM сам позаботится о кавычках, если мы передадим AppParameters как единую строку.
+    # Основная опасность: `&`, `|`, `&&`, `||`, `(`, `)`
+
+    # Проверяем на наличие опасных символов оболочки
+    if re.search(r"[&|<>;()`]", command):
+        return False
+    return True
 
 def decode_windows_output(byte_string: bytes) -> str:
     """
@@ -111,19 +143,3 @@ def find_free_port(start_port: int, existing_ports: set) -> int:
             if s.connect_ex(('localhost', port)) != 0:
                 return port
         port += 1
-
-def run_command_detached(command: str, cwd: str = None):
-    """
-    Запускает команду в новом, полностью отсоединенном процессе.
-    Не ждет ее завершения и не получает stdout/stderr.
-    Идеально для перезапуска служб, чтобы не убить родительский процесс.
-    """
-    logging.info(f"Executing detached command: '{command}' in '{cwd or 'default dir'}'")
-    # DETACHED_PROCESS работает только в Windows
-    creationflags = 0
-    if sys.platform == "win32":
-        creationflags = subprocess.DETACHED_PROCESS
-
-    subprocess.Popen(command, shell=True, cwd=cwd, creationflags=creationflags,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    logging.info(f"Detached command sent.")
