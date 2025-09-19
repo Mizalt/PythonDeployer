@@ -27,6 +27,8 @@ from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+
+
 import re
 
 # --- Импорты из нашего пакета 'app' ---
@@ -125,9 +127,8 @@ async def proxy_app(
         current_user: User = Depends(get_current_active_user)
 ):
     """
-    Эндпоинт, который работает как обратный прокси.
-    Он принимает запрос, находит нужный порт приложения и перенаправляет
-    запрос на http://localhost:<port>/<path>, а затем возвращает ответ.
+    Эндпоинт, который работает как обратный прокси для просмотра приложений в iframe.
+    Все запросы (включая статику) проксируются к приложению.
     """
     if not is_safe_name(app_name):
         raise HTTPException(status_code=400, detail="Invalid application name.")
@@ -138,7 +139,15 @@ async def proxy_app(
     target_url = f"http://localhost:{app_info.port}/{path}"
 
     headers = dict(request.headers)
-    headers["host"] = f"localhost:{app_info.port}"
+
+    # Удаляем Host заголовок, чтобы httpx сам установил Host: localhost:<port>
+    # Это важно для приложений, которые могут ожидать 'localhost' для внутренних запросов.
+    if "host" in headers:
+        del headers["host"]
+
+    # Удаляем заголовок Referer, если он указывает на deployer.
+    if "referer" in headers and headers["referer"].startswith(f"http://{request.url.hostname}:{request.url.port}/api/proxy/"):
+        del headers["referer"]
 
     try:
         proxied_request = client.build_request(
@@ -726,6 +735,34 @@ def _update_nginx_config_for_app(
         return
 
     is_path_target = nginx_proxy_target.startswith('/')
+    app_files_root = APPS_BASE_DIR / app_name
+
+    # Блок для обслуживания статических файлов Nginx-ом
+    # Эта логика остается, так как она для ВНЕШНЕГО доступа через Nginx.
+    # Для внутреннего прокси Deployer'а она не используется.
+    static_files_block = ""
+    if (app_files_root / "static").exists():  # Проверяем, существует ли папка 'static'
+        static_files_block = f"""
+            # Обслуживание статических файлов приложения {app_name}
+            location /static/ {{
+                root   {app_files_root.as_posix()};
+                expires 30d;
+                add_header Cache-Control "public, no-transform";
+            }}
+            """
+    # Дополнительно: если у вашего приложения есть другие папки со статикой (например, `/uploads/`)
+    # которые не внутри `/static/`, их тоже можно добавить здесь.
+    # Например:
+    if (app_files_root / "uploads").exists():
+        static_files_block += f"""
+            location /uploads/ {{
+                root   {app_files_root.as_posix()};
+                expires 30d;
+                add_header Cache-Control "public, no-transform";
+            }}
+            """
+
+    is_path_target = nginx_proxy_target.startswith('/')
     app_path = APPS_BASE_DIR / app_name  # Определяем путь к файлам здесь
 
     if is_path_target:
@@ -755,88 +792,183 @@ def _update_nginx_config_for_app(
         else:  # python_app
             if not path_prefix.endswith('/'): path_prefix += '/'
             location_content = f"""
-    # Config for {app_name} at location {path_prefix}
-    location {path_prefix} {{
-        proxy_pass http://localhost:{port}/;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }}
-    """
-        location_conf_path.write_text(location_content, encoding="utf-8")
-
-    else:  # is_domain_target
-        server_name = nginx_proxy_target
-        location_folder_for_domain = NGINX_LOCATIONS_DIR / server_name
-        location_folder_for_domain.mkdir(exist_ok=True)
-
-        content_block = ""
-        app_path = APPS_BASE_DIR / app_name
-
-        if app_type == "static_site":
-            # Конфиг для статики
-            content_block = f"""
-            location / {{
-                root   {app_path.as_posix()};
-                index  index.html index.htm;
-                try_files $uri $uri/ /index.html; # Для SPA-приложений
-            }}"""
-        else:
-            # Существующий конфиг для проксирования
-            content_block = f"""
-            location / {{
-                proxy_pass http://localhost:{port};
+            # Config for {app_name} at location {path_prefix}
+            location {path_prefix} {{
+                proxy_pass http://localhost:{port}/;
                 proxy_set_header Host $host;
                 proxy_set_header X-Real-IP $remote_addr;
                 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
                 proxy_set_header X-Forwarded-Proto $scheme;
-            }}"""
+            }}
+            """
+        location_conf_path.write_text(location_content, encoding="utf-8")
+
+
+    else:  # is_domain_target
+
+        server_name = nginx_proxy_target
+
+        location_folder_for_domain = NGINX_LOCATIONS_DIR / server_name
+
+        location_folder_for_domain.mkdir(exist_ok=True)
+
+        content_block = ""
+
+        # app_path = APPS_BASE_DIR / app_name # Это строка дублируется, уже есть app_files_root
+
+        if app_type == "static_site":
+
+            content_block = f"""
+
+                location / {{
+
+                    root   {app_files_root.as_posix()}; # ИСПОЛЬЗУЙТЕ app_files_root
+
+                    index  index.html index.htm;
+
+                    try_files $uri $uri/ /index.html;
+
+                }}"""
+
+        else:
+
+            content_block = f"""
+
+                location / {{
+
+                    proxy_pass http://localhost:{port};
+
+                    proxy_set_header Host $host;
+
+                    proxy_set_header X-Real-IP $remote_addr;
+
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+                    proxy_set_header X-Forwarded-Proto $scheme;
+
+                    proxy_http_version 1.1; # ДОБАВЛЕНО для Websockets
+
+                    proxy_set_header Upgrade $http_upgrade; # ДОБАВЛЕНО для Websockets
+
+                    proxy_set_header Connection "upgrade"; # ДОБАВЛЕНО для Websockets
+
+                    proxy_read_timeout 86400; # ДОБАВЛЕНО для Websockets
+
+                }}"""
 
         use_ssl = False
+
         ssl_config_block = ""
+
         if ssl_certificate_name:
+
             cert_dir = SSL_DIR / ssl_certificate_name
+
             cert_path = cert_dir / "fullchain.pem"
+
             key_path = cert_dir / "privkey.pem"
+
             if cert_path.exists() and key_path.exists():
                 use_ssl = True
+
                 ssl_config_block = f"""
-    listen 443 ssl;
-    ssl_certificate {cert_path.as_posix()};
-    ssl_certificate_key {key_path.as_posix()};
-    ssl_protocols TLSv1.2 TLSv1.3;
-"""
+
+        listen 443 ssl;
+
+        ssl_certificate {cert_path.as_posix()};
+
+        ssl_certificate_key {key_path.as_posix()};
+
+        ssl_protocols TLSv1.2 TLSv1.3;
+
+    """
 
         include_line = f"    include {location_folder_for_domain.as_posix()}/*.conf;"
 
         final_config = ""
-        if use_ssl:
-            final_config += f"""
-server {{
-    listen 80;
-    server_name {server_name};
-    location / {{
-        return 301 https://$host$request_uri;
-    }}
-}}
 
-server {{
-    {ssl_config_block}
-    server_name {server_name};
-    {content_block}
-    {include_line}
-}}
-"""
-        else:
+        if use_ssl:
+
             final_config += f"""
-server {{
-    listen 80;
-    server_name {server_name};
-    {content_block}
-    {include_line}
-}}
-"""
+
+    server {{
+
+        listen 80;
+
+        server_name {server_name};
+
+
+        # ACME Challenge Handler (нужен для получения/обновления сертификатов)
+
+        location /.well-known/acme-challenge/ {{
+
+            root   {ACME_CHALLENGE_DIR.as_posix()};
+
+            default_type "text/plain";
+
+        }}
+
+
+        location / {{
+
+            return 301 https://$host$request_uri;
+
+        }}
+
+    }}
+
+
+    server {{
+
+        {ssl_config_block}
+
+        server_name {server_name};
+
+
+        {static_files_block}  # <--- ВСТАВИТЬ СЮДА
+
+
+        {content_block}
+
+        {include_line}
+
+    }}
+
+    """
+
+        else:  # HTTP only
+
+            final_config += f"""
+
+    server {{
+
+        listen 80;
+
+        server_name {server_name};
+
+
+        # ACME Challenge Handler
+
+        location /.well-known/acme-challenge/ {{
+
+            root   {ACME_CHALLENGE_DIR.as_posix()};
+
+            default_type "text/plain";
+
+        }}
+
+
+        {static_files_block}  # <--- ВСТАВИТЬ СЮДА
+
+
+        {content_block}
+
+        {include_line}
+
+    }}
+
+    """
+
         site_conf_path.write_text(final_config, encoding="utf-8")
 
 
@@ -888,7 +1020,7 @@ async def perform_ssl_issuance(task_id: str, domain: str):
         await manager.send_message("\n[3/4] Запуск win-acme. Это может занять до 2 минут...", task_id)
         command_args = [
             str(win_acme_exe),  # Путь к исполняемому файлу как первый аргумент
-            "--force",
+            #"--force",
             "--verbose",
             "--source", "manual",
             "--host", domain,  # <-- domain передается как отдельный аргумент
