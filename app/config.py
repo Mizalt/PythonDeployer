@@ -1,5 +1,6 @@
 # config.py
 from pathlib import Path
+import secrets 
 
 # --- Основные пути ---
 # Директория для хранения данных приложения (БД, бекапы и т.д.)
@@ -42,8 +43,34 @@ ACME_CHALLENGE_DIR.mkdir(exist_ok=True)
 # --- Настройки сети ---
 BASE_PORT = 8001
 
+def get_or_create_secret_key(path: Path) -> str:
+    """
+    Проверяет наличие файла с секретным ключом. Если файл есть, читает ключ из него.
+    Если файла нет, генерирует новый криптографически стойкий ключ и сохраняет его в файл.
+    """
+    if path.exists():
+        print(f"INFO: Loading secret key from {path}")
+        return path.read_text().strip()
+    else:
+        print(f"INFO: Secret key file not found. Generating a new one at {path}")
+        # Генерируем новый 32-байтный ключ (64 шестнадцатеричных символа)
+        new_key = secrets.token_hex(32)
+        try:
+            path.write_text(new_key)
+            # В Windows можно добавить атрибут "скрытый"
+            # import os
+            # os.system(f'attrib +h "{path}"')
+            print("INFO: New secret key successfully generated and saved.")
+            return new_key
+        except Exception as e:
+            print(f"CRITICAL: Could not write secret key file to {path}. Please check permissions. Error: {e}")
+            raise
+
 # --- Настройки безопасности и JWT ---
-SECRET_KEY = "e8b5e6e3f4a3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6f5e4d3c2b1a0f9e8d7"
+# Путь к файлу с ключом
+SECRET_KEY_FILE = DATA_DIR / ".secret_key"
+# Получаем или создаем ключ
+SECRET_KEY = get_or_create_secret_key(SECRET_KEY_FILE)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 120 # Увеличим время жизни токена
 
