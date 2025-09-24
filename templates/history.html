@@ -19,8 +19,36 @@
         .loader { text-align: center; padding: 2rem; }
         .history-item { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 1rem; border-bottom: 1px solid #eee; }
         .history-item:last-child { border: none; }
-        .history-item button { background-color: #28a745; color: white; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; }
-        .history-item button:hover { background-color: #218838; }
+
+        .history-item-controls {
+            display: flex;
+            gap: 0.5rem; /* Отступ между кнопками */
+        }
+        .history-item-controls button,
+        .history-item-controls a {
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            cursor: pointer;
+            text-decoration: none; /* Для тега <a> */
+            font-family: inherit; /* Наследуем шрифт */
+            font-size: 0.9em; /* Немного уменьшим шрифт кнопок */
+        }
+        .restore-btn {
+            background-color: #28a745;
+        }
+        .restore-btn:hover {
+            background-color: #218838;
+        }
+        .download-btn {
+            background-color: #007bff;
+        }
+        .download-btn:hover {
+            background-color: #0056b3;
+        }
+        /* --- КОНЕЦ ИЗМЕНЕНИЙ В СТИЛЯХ --- */
+
         .error-message { color: #dc3545; font-weight: bold; text-align: center; padding: 1rem; }
     </style>
 </head>
@@ -131,11 +159,20 @@ document.addEventListener('DOMContentLoaded', () => {
         history.forEach(item => {
             const dateStr = item.deployed_at ? new Date(item.deployed_at).toLocaleString('ru-RU') : 'Invalid date';
             const filename = item.filename || 'Unknown file';
+
+            // --- НАЧАЛО ИЗМЕНЕНИЙ В HTML-ШАБЛОНЕ ---
+            // Используем тег <a> для скачивания - это проще и не требует JS
+            const downloadUrl = `/api/apps/${appName}/history/download?filename=${encodeURIComponent(filename)}`;
+
             html += `
                 <div class="history-item">
                     <div><strong>${filename}</strong><br><small>Дата: ${dateStr}</small></div>
-                    <button class="restore-btn" data-filename="${filename}">Восстановить эту версию</button>
+                    <div class="history-item-controls">
+                        <a href="${downloadUrl}" class="download-btn" download>Скачать</a>
+                        <button class="restore-btn" data-filename="${filename}">Восстановить</button>
+                    </div>
                 </div>`;
+            // --- КОНЕЦ ИЗМЕНЕНИЙ В HTML-ШАБЛОНЕ ---
         });
         historyContainer.innerHTML = html;
     }

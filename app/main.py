@@ -18,13 +18,12 @@ import os
 import signal
 
 import httpx
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse, JSONResponse, HTMLResponse
 from fastapi import (
     Depends, FastAPI, File, UploadFile, Form, HTTPException, Query,
     WebSocket, WebSocketDisconnect, Request, Response, BackgroundTasks
 )
 from fastapi.security import OAuth2PasswordRequestForm
-from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 
@@ -1695,6 +1694,31 @@ def restore_deployment(app_name: str, request: RestoreRequest,
         app_info.status = _get_app_final_status(app_name)  # Обновляем статус в БД
         add_or_update_app(app_info)
         raise HTTPException(status_code=500, detail=f"Failed to restore app: {str(e)}")
+
+
+@app.get("/api/apps/{app_name}/history/download")
+async def download_backup(
+    app_name: str,
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    filename: str = Query(...)
+):
+    """Отправляет запрошенный файл бекапа для скачивания."""
+    if not is_safe_name(app_name):
+        raise HTTPException(status_code=400, detail="Invalid application name.")
+
+    # КРИТИЧЕСКИ ВАЖНО: Проверка безопасности имени файла для предотвращения path traversal
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename.")
+
+    backup_file_path = BACKUPS_DIR / app_name / filename
+    if not backup_file_path.exists() or not backup_file_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Backup file '{filename}' not found.")
+
+    return FileResponse(
+        path=backup_file_path,
+        filename=filename,
+        media_type='application/zip'
+    )
 
 
 @app.get("/api/apps/{app_name}/logs", response_model=AppLogs)
